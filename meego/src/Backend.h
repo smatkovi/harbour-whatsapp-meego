@@ -17,6 +17,7 @@
 #include <QString>
 #include <QStringList>
 #include <QVariantList>
+#include <QUrl>
 #include <QVariantMap>
 
 class QNetworkAccessManager;
@@ -91,6 +92,9 @@ private slots:
 
 private:
     QNetworkReply *hole(const QString &pfad);
+    // Basisadresse; Parameter gehoeren per addQueryItem daran,
+    // nicht von Hand kodiert in die Zeichenkette.
+    QUrl adresse(const QString &pfad);
     void ereignisPoll();
     // Kopiert einen Anhang nach MyDocs/Downloads und gibt den
     // dortigen Pfad zurueck -- nur dort findet ihn das Geraet.

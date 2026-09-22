@@ -79,6 +79,21 @@ QNetworkReply *Backend::hole(const QString &pfad)
     return m_netz->get(r);
 }
 
+QUrl Backend::adresse(const QString &pfad)
+{
+    // Parameter NICHT selbst prozentkodieren und in die Zeichenkette haengen:
+    // QUrl kodiert danach ein zweites Mal, aus "," wird ueber "%2C" dann
+    // "%252C", das Backend dekodiert einmal -- und im verschickten Text steht
+    // "%2C" statt dem Komma. Genau so sind Kommas und Fragezeichen in
+    // Nachrichten gelandet. addQueryItem macht es richtig, einmal.
+    QUrl u;
+    u.setScheme(QLatin1String("http"));
+    u.setHost(QLatin1String("127.0.0.1"));
+    u.setPort(port());
+    u.setPath(pfad);
+    return u;
+}
+
 void Backend::setzeFehler(const QString &text)
 {
     if (m_fehler == text)
@@ -218,10 +233,14 @@ void Backend::chatsFertig()
 void Backend::chatOeffnen(const QString &jid)
 {
     m_offenerChat = jid;
-    QNetworkReply *r = hole(QLatin1String("/messages?jid=") + QString::fromLatin1(QUrl::toPercentEncoding(jid)));
+    QUrl um = adresse(QLatin1String("/messages"));
+    um.addQueryItem(QLatin1String("jid"), jid);
+    QNetworkReply *r = m_netz->get(QNetworkRequest(um));
     connect(r, SIGNAL(finished()), this, SLOT(nachrichtenFertig()));
     // Gelesen melden, damit der ungelesen-Zaehler auf beiden Geraeten stimmt.
-    QNetworkReply *g = hole(QLatin1String("/chat/opened?jid=") + QString::fromLatin1(QUrl::toPercentEncoding(jid)));
+    QUrl ug = adresse(QLatin1String("/chat/opened"));
+    ug.addQueryItem(QLatin1String("jid"), jid);
+    QNetworkReply *g = m_netz->get(QNetworkRequest(ug));
     connect(g, SIGNAL(finished()), g, SLOT(deleteLater()));
 }
 
@@ -251,11 +270,10 @@ void Backend::senden(const QString &jid, const QString &text)
 {
     if (text.trimmed().isEmpty())
         return;
-    const QString pfad = QLatin1String("/send?to=")
-            + QString::fromLatin1(QUrl::toPercentEncoding(jid))
-            + QLatin1String("&text=")
-            + QString::fromLatin1(QUrl::toPercentEncoding(text));
-    QNetworkReply *r = hole(pfad);
+    QUrl u = adresse(QLatin1String("/send"));
+    u.addQueryItem(QLatin1String("to"), jid);
+    u.addQueryItem(QLatin1String("text"), text);
+    QNetworkReply *r = m_netz->get(QNetworkRequest(u));
     connect(r, SIGNAL(finished()), this, SLOT(sendenFertig()));
 }
 
@@ -352,8 +370,9 @@ void Backend::medienLaden(const QString &nachrichtenId)
 {
     if (nachrichtenId.isEmpty())
         return;
-    QNetworkReply *r = hole(QLatin1String("/download?id=")
-                            + QString::fromLatin1(QUrl::toPercentEncoding(nachrichtenId)));
+    QUrl u = adresse(QLatin1String("/download"));
+    u.addQueryItem(QLatin1String("id"), nachrichtenId);
+    QNetworkReply *r = m_netz->get(QNetworkRequest(u));
     connect(r, SIGNAL(finished()), this, SLOT(medienFertig()));
 }
 
@@ -490,16 +509,12 @@ void Backend::anhangSenden(const QString &jid, const QString &pfad,
         return;
     // Die einfache Form von /sendmedia nimmt einen lokalen Pfad. Multipart
     // waere hier unsinnig: die Datei liegt schon auf demselben Geraet.
-    QString ziel = QLatin1String("/sendmedia?to=")
-            + QString::fromLatin1(QUrl::toPercentEncoding(jid))
-            + QLatin1String("&file=")
-            + QString::fromLatin1(QUrl::toPercentEncoding(pfad));
+    QUrl u = adresse(QLatin1String("/sendmedia"));
+    u.addQueryItem(QLatin1String("to"), jid);
+    u.addQueryItem(QLatin1String("file"), pfad);
     if (!beschriftung.isEmpty())
-        ziel += QLatin1String("&caption=")
-                + QString::fromLatin1(QUrl::toPercentEncoding(beschriftung));
-    QNetworkRequest r(QUrl(QString::fromLatin1("http://127.0.0.1:%1%2")
-                           .arg(const_cast<Backend *>(this)->port()).arg(ziel)));
-    QNetworkReply *rep = m_netz->post(r, QByteArray());
+        u.addQueryItem(QLatin1String("caption"), beschriftung);
+    QNetworkReply *rep = m_netz->post(QNetworkRequest(u), QByteArray());
     connect(rep, SIGNAL(finished()), this, SLOT(anhangFertig()));
 }
 
