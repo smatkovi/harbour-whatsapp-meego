@@ -1,104 +1,85 @@
-# harbour-whatsapp
+# WhatsApp für MeeGo Harmattan (Nokia N9 / N950)
 
-Native WhatsApp client for Sailfish OS using whatsmeow library.
+Ein WhatsApp-Client für ein Telefon von 2011. Er meldet sich als
+verknüpftes Gerät an — so, wie WhatsApp Web es tut — und braucht dafür ein
+Haupttelefon, auf dem WhatsApp läuft.
 
-## Requirements
+Der Port setzt auf [harbour-whatsapp](https://github.com/smatkovi/harbour-whatsapp)
+für Sailfish auf. Geteilt wird das Go-Backend mit
+[whatsmeow](https://github.com/tulir/whatsmeow); die Oberfläche ist neu
+geschrieben, weil Silica auf Harmattan nicht existiert.
 
-- Sailfish OS 4.5+ device (tested on 5.1, Xperia 10 V)
-- For building: Go **1.26 or newer** (the whatsmeow dependency requires it)
+## Was geht
 
-## Installing (prebuilt RPM)
+* Verknüpfen per Telefonnummer, Chatliste, Verlauf, Senden und Empfangen
+* Bilder, Dokumente, Dateianhänge, Sprachnachrichten (Opus wird auf dem
+  Gerät nach WAV gewandelt, weil Harmattan kein Opus kann)
+* Profilbilder, Gruppen, Mitgliederliste einer Gruppe mit dem Weg in den
+  Einzelchat
+* Ältere Nachrichten vom Haupttelefon nachladen
+* Sprachanrufe, wahlweise über eine eingebaute SIP-Brücke: dann klingelt es
+  in der systemeigenen Anrufansicht, auch am Sperrbildschirm
+* **Integration in die Nachrichten-App**: WhatsApp-Chats erscheinen neben
+  SMS, Telegram und Matrix (siehe unten)
+* Das Backend läuft als Dienst weiter, wenn die App zu ist, und verbindet
+  sich nach einem Netzwechsel von selbst neu
 
-Download the RPM for your architecture (aarch64 for most modern devices,
-armv7hl for older 32-bit ones) from OpenRepos or the GitHub releases, then:
+## Installieren
 
-```bash
-devel-su rpm -U ~/Downloads/harbour-whatsapp-*.rpm
+```
+dpkg -i harbour-whatsapp_<version>_armel.deb
 ```
 
-On first start, pair the app as a linked device: WhatsApp on your phone →
-Settings → Linked devices → Link with phone number, and enter the pairing
-code the app shows. The app ships with minimal sandbox permissions
-(Internet, Secrets); optional features are enabled by copy-paste commands
-found in the app's Settings page:
-- **Media storage** access (save/pick files outside the sandbox)
-- **Location** (send your position / share live location)
-- **Contacts** (address book suggestions, opt-in inside the app as well)
-- **Audio** and **Microphone** (voice calls: earpiece/speaker routing and the microphone; without them a call connects but stays silent)
+Das Paket legt beim ersten Start der App zwei Konten an — eines für die
+Nachrichten-App, eines für Anrufe — und entfernt sie bei der
+Deinstallation wieder.
 
-Encryption of the local database strictly requires Sailfish Secrets - the
-app refuses to run unencrypted and will guide you through a reset if an
-old unencrypted database is found.
+## Die Nachrichten-App
 
-## Building from source
+Die Anbindung hängt sich an [pybridge](https://openrepos.net/), den
+Telepathy-Verbindungsmanager, der auf Harmattan schon Telegram und Matrix
+in die Nachrichten-App trägt. Neu ist nur ein Daemon
+(`/opt/pywhatsapp/whatsapp_daemon.py`), der auf der einen Seite pybridges
+Zeilen-JSON spricht und auf der anderen die HTTP-Schnittstelle des
+Backends.
 
-### A) On the Sailfish device itself
+pybridge selbst gehört einem fremden Paket und wird nicht ersetzt, sondern
+an neun Stellen erweitert — überall dort, wo es nach Protokoll verzweigt,
+wird aus `== 'telegram'` ein `in ('telegram', 'whatsapp')`. Das erledigt
+`patch-pybridge.py`, das jede erwartete Stelle genau einmal vorfinden muss
+und sonst abbricht, ohne etwas anzufassen. So lässt es sich nach einem
+pybridge-Update erneut anwenden.
 
-Go 1.26+ is not in the Jolla repos, but community repositories carry it.
-With the Rikudou_Sennin OpenRepos repository enabled (via Storeman):
+Ohne pybridge läuft die App trotzdem, nur eben mit eigener Oberfläche.
 
-```bash
-# Toolchain + build dependencies
-devel-su zypper in --repo openrepos-Rikudou_Sennin go
-devel-su pkcon install gcc sqlcipher-devel rpm-build
+## Bauen
 
-git clone https://github.com/smatkovi/harbour-whatsapp.git
-cd harbour-whatsapp
-./build.sh
+Gebraucht werden ein Cross-GCC für `arm-none-linux-gnueabi`, das
+MADDE-Sysroot aus dem Harmattan-SDK (für Qt 4.7) und Go 1.26 oder neuer.
 
-devel-su rpm -U ~/rpmbuild/RPMS/$(uname -m)/harbour-whatsapp-*.rpm
+```
+meego/build.sh          # -> build/meego/{harbour-whatsapp,wa-backend}
+meego/build-deb.sh 1.7  # -> harbour-whatsapp_1.7_armel.deb
 ```
 
-This builds the backend dynamically against the device's SQLCipher.
+Zwei Link-Details sind nicht kosmetisch: `-Wl,--dynamic-linker=/lib/ld-linux.so.3`,
+sonst verlangt das Binary den armhf-Lader, den Harmattan nicht hat; und
+`-static-libstdc++ -static-libgcc` mit `--exclude-libs,ALL`, damit die
+moderne C++-Laufzeit im Binary bleibt, statt sie an das mit GCC 4.4 gebaute
+Qt zu exportieren.
 
-### B) Cross-compiling on a Linux desktop (recommended)
+## Was nicht geht
 
-Produces fully static backend binaries - no runtime dependencies on the
-device beyond a stock Sailfish OS:
+* **Die Lautstärketasten stellen im Gespräch den Klingelton**, nicht die
+  Gesprächslautstärke. Dafür müsste sich die App über `com.nokia.mce` als
+  Anruf anmelden, und das verweigert der Bus unsignierten Paketen.
+* Die Nachrichtendatenbank liegt unverschlüsselt (Modus 0600). Auf Sailfish
+  übernimmt das Sailfish Secrets; auf Harmattan gibt es keinen
+  Schlüsseldienst, hinter dem ein Schlüssel besser aufgehoben wäre als in
+  einer Datei daneben — und die Partition ist ohnehin nicht verschlüsselt.
+  Lieber ehrlich unverschlüsselt als scheinverschlüsselt.
+* Videoanrufe.
 
-```bash
-# Debian/Ubuntu example
-sudo apt install golang gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf rpm
+## Lizenz
 
-git clone https://github.com/smatkovi/harbour-whatsapp.git
-cd harbour-whatsapp/backend
-
-VERSION=$(grep '^Version:' ../rpm/harbour-whatsapp.spec | awk '{print $2}')
-
-# aarch64 (64-bit devices)
-CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc \
-  go build -tags netgo,osusergo \
-  -ldflags "-s -w -X main.version=$VERSION -linkmode external -extldflags '-static'" \
-  -o wa-backend .
-
-# armv7hl (32-bit devices): GOARCH=arm GOARM=7 CC=arm-linux-gnueabihf-gcc
-
-# Then package (see rpm/harbour-whatsapp.spec; sources are the wa-backend
-# binary plus qml/, start_backend.py, harbour-whatsapp.desktop, icons/)
-```
-
-The committed `go.sum` makes builds reproducible - a fresh clone compiles
-without running `go mod tidy` first.
-
-## Structure
-```
-harbour-whatsapp-src/
-├── backend/           # Go source files
-│   ├── main.go
-│   ├── secrets.go
-│   ├── go.mod
-│   └── go.sum
-├── qml/               # QML UI
-│   └── harbour-whatsapp.qml
-├── icons/             # App icons
-│   └── hicolor/
-├── rpm/               # RPM spec
-│   └── harbour-whatsapp.spec
-├── harbour-whatsapp.desktop
-├── build.sh
-└── README.md
-```
-
-## License
-
-MIT
+Wie das Ursprungsprojekt.
