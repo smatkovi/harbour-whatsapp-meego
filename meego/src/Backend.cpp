@@ -236,7 +236,32 @@ void Backend::senden(const QString &jid, const QString &text)
             + QLatin1String("&text=")
             + QString::fromLatin1(QUrl::toPercentEncoding(text));
     QNetworkReply *r = hole(pfad);
-    connect(r, SIGNAL(finished()), this, SLOT(nachrichtenFertig()));
+    connect(r, SIGNAL(finished()), this, SLOT(sendenFertig()));
+}
+
+void Backend::sendenFertig()
+{
+    // /send antwortet mit dem blanken Wort "ok", nicht mit JSON. Die Antwort
+    // an nachrichtenFertig zu haengen war falsch: dort scheiterte das Parsen
+    // still, der Verlauf wurde nie nachgeladen -- und ein Fehler beim Senden
+    // waere ueberhaupt nicht aufgefallen. Die Nachricht verschwand einfach.
+    QNetworkReply *r = qobject_cast<QNetworkReply *>(sender());
+    if (!r)
+        return;
+    r->deleteLater();
+    const QString antwort = QString::fromUtf8(r->readAll()).trimmed();
+    if (r->error() != QNetworkReply::NoError) {
+        setzeFehler(antwort.isEmpty() ? r->errorString() : antwort);
+        return;
+    }
+    if (antwort != QLatin1String("ok")) {
+        setzeFehler(antwort);
+        return;
+    }
+    setzeFehler(QString());
+    // Das Backend traegt die eigene Nachricht erst nach dem Versand ein.
+    if (!m_offenerChat.isEmpty())
+        chatOeffnen(m_offenerChat);
 }
 
 void Backend::koppeln(const QString &telefonnummer)

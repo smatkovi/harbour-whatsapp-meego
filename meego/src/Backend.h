@@ -70,6 +70,7 @@ private slots:
     void statusFertig();
     void chatsFertig();
     void nachrichtenFertig();
+    void sendenFertig();
     void ereignisFertig();
     void kopplungFertig();
     void abfragen();

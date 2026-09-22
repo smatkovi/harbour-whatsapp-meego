@@ -61,6 +61,7 @@ Page {
         delegate: Item {
             width: liste.width
             height: 88
+            clip: true
 
             Rectangle {
                 anchors.fill: parent
@@ -102,6 +103,7 @@ Page {
                 Label {
                     width: parent.width
                     elide: Text.ElideRight
+                    maximumLineCount: 1
                     text: modelData.name || modelData.jid
                     font.pixelSize: 24
                     font.bold: modelData.unread > 0
@@ -109,10 +111,11 @@ Page {
                 Label {
                     width: parent.width
                     elide: Text.ElideRight
+                    maximumLineCount: 1
                     color: "#909090"
                     font.pixelSize: 19
                     text: (modelData.fromMe ? "Du: " : "")
-                          + (modelData.lastMessage || "")
+                          + (modelData.lastMessage || "").replace(/\s+/g, " ")
                 }
             }
 
@@ -138,7 +141,7 @@ Page {
                     Label {
                         id: zaehler
                         anchors.centerIn: parent
-                        text: modelData.unread
+                        text: modelData.unread ? modelData.unread : ""
                         color: "#000000"
                         font.pixelSize: 16
                         font.bold: true
