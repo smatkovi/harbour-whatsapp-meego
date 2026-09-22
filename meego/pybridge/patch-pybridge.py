@@ -33,7 +33,7 @@ MARKE = "'whatsapp': {"
 
 ALT_ZUSTELLUNG = '        ch = self._get_or_create_channel(chat_handle)\n        log("DELIVERING to ch=%s h=%s" % (ch._path, sender_handle))\n        ch.receive_message(sender_handle, text, timestamp)'
 
-NEU_ZUSTELLUNG = '        ch = self._get_or_create_channel(chat_handle)\n        log("DELIVERING to ch=%s h=%s" % (ch._path, sender_handle))\n        ch.receive_message(sender_handle, text, timestamp)\n        # Auf einem BESTEHENDEN Kanal erfaehrt CommHistory von einer neuen\n        # Nachricht nur, solange es ihn noch beobachtet. Schliesst man die\n        # Unterhaltung in der Nachrichten-App, hoert das auf -- und danach\n        # stapeln sich die Nachrichten unsichtbar als "pending". Im Feld\n        # sah man dann "pending_before=1" und in der Nachrichten-App\n        # nichts, waehrend die App des Dienstes die Nachricht zeigte.\n        #\n        # Gemeldet wird nur beobachtend (observe_only): die Unterhaltung\n        # soll im Verlauf auftauchen, sich aber nicht von selbst oeffnen.\n        # Hoechstens alle fuenf Sekunden -- jede Meldung startet einen\n        # eigenen Python-Prozess, und der kostet auf diesem Geraet.\n        _jetzt = time.time()\n        if _jetzt - getattr(ch, "_zuletzt_gemeldet", 0) > 5:\n            ch._zuletzt_gemeldet = _jetzt\n            gobject.idle_add(\n                lambda p=ch._path, c=ch: self._dispatch_channel(p, c, True) or False)'
+NEU_ZUSTELLUNG = '        ch = self._get_or_create_channel(chat_handle)\n        log("DELIVERING to ch=%s h=%s" % (ch._path, sender_handle))\n        ch.receive_message(sender_handle, text, timestamp)\n        # Auf einem BESTEHENDEN Kanal erfaehrt CommHistory von einer neuen\n        # Nachricht nur, solange es ihn noch beobachtet. Schliesst man die\n        # Unterhaltung in der Nachrichten-App, hoert das auf -- und danach\n        # stapeln sich die Nachrichten unsichtbar als "pending".\n        #\n        # Gemeldet wird nur beobachtend: die Unterhaltung soll im Verlauf\n        # auftauchen, sich aber nicht von selbst oeffnen.\n        #\n        # Und nur, wenn es noetig ist. Jede Meldung startet einen eigenen\n        # Python-Prozess, und auf diesem Geraet kostet das spuerbar: beim\n        # Nachholen vieler Nachrichten stieg die Last auf ueber sieben.\n        # Noetig ist es, wenn schon etwas Unbestaetigtes im Kanal liegt --\n        # dann hoert offenbar niemand mehr zu. Und einmal je Minute\n        # ohnehin, damit auch die erste verpasste Nachricht ankommt und\n        # nicht erst die zweite sie mitzieht.\n        _jetzt = time.time()\n        _offen = len(ch._pending) > 1\n        _lange_her = _jetzt - getattr(ch, "_zuletzt_gemeldet", 0) > 60\n        if _offen or _lange_her:\n            ch._zuletzt_gemeldet = _jetzt\n            gobject.idle_add(\n                lambda p=ch._path, c=ch: self._dispatch_channel(p, c, True) or False)'
 
 ERSETZUNGEN = [
 
@@ -150,8 +150,19 @@ def zustellung_ergaenzen(text):
 
     Gibt (Text, ob geaendert) zurueck.
     """
-    if "_zuletzt_gemeldet" in text:
+    if "_lange_her" in text:
         return text, False
+    if "_zuletzt_gemeldet" in text:
+        # Eine aeltere Fassung steht schon drin: sie meldete bei jeder
+        # Nachricht und trieb die Last hoch. Ersetzen statt ueberspringen.
+        anfang = text.find("        # Auf einem BESTEHENDEN Kanal")
+        ende = text.find("or False)", anfang)
+        if anfang < 0 or ende < 0:
+            sys.stderr.write("pybridge: alte Fassung nicht ersetzbar\n")
+            return text, False
+        ende += len("or False)")
+        marke = "        # Auf einem BESTEHENDEN Kanal"
+        return text[:anfang] + NEU_ZUSTELLUNG[NEU_ZUSTELLUNG.find(marke):] + text[ende:], True
     if text.count(ALT_ZUSTELLUNG) != 1:
         sys.stderr.write(
             "pybridge: Zustellstelle nicht eindeutig gefunden - "
