@@ -417,13 +417,68 @@ void Backend::oeffnen(const QString &pfad)
     if (ziel.isEmpty())
         return;
 
+    // Sprachnachrichten kommen als Opus in OGG. Harmattan ist von 2011 und
+    // kennt Opus nicht -- der Betrachter oeffnet die Datei zwar, bleibt aber
+    // stumm. Das mitgelieferte ffmpeg kann Opus dekodieren, also wird einmal
+    // nach WAV gewandelt und das abgespielt.
+    if (ziel.endsWith(QLatin1String(".ogg"), Qt::CaseInsensitive)
+            || ziel.endsWith(QLatin1String(".opus"), Qt::CaseInsensitive)) {
+        const QString wav = ziel.left(ziel.lastIndexOf(QLatin1Char('.'))) + QLatin1String(".wav");
+        if (QFile::exists(wav)) {
+            starteBetrachter(wav);
+            return;
+        }
+        const QString ffmpeg = QLatin1String("/opt/ffmpeg/bin/ffmpeg");
+        if (!QFile::exists(ffmpeg)) {
+            setzeFehler(QString::fromUtf8("Sprachnachrichten brauchen ffmpeg "
+                                          "(Paket ffmpeg-n9)."));
+            return;
+        }
+        // Nebenlaeufig: auf diesem Geraet dauert das eine Sekunde oder zwei,
+        // und die Oberflaeche soll solange nicht stehen.
+        QProcess *wandler = new QProcess(this);
+        wandler->setProperty("wav", wav);
+        connect(wandler, SIGNAL(finished(int, QProcess::ExitStatus)),
+                this, SLOT(umwandlungFertig(int)));
+        setzeFehler(QString::fromUtf8("Sprachnachricht wird umgewandelt …"));
+        wandler->start(ffmpeg, QStringList()
+                       << QLatin1String("-loglevel") << QLatin1String("error")
+                       << QLatin1String("-y")
+                       << QLatin1String("-i") << ziel
+                       << QLatin1String("-ar") << QLatin1String("44100")
+                       << wav);
+        return;
+    }
+
+    starteBetrachter(ziel);
+}
+
+void Backend::starteBetrachter(const QString &pfad)
+{
     // Nicht QDesktopServices: dessen Qt-4.7-Fassung kennt Harmattans
     // Zuordnung nicht und meldet trotzdem Erfolg. xdg-open gibt es auf dem
     // Geraet und trifft den richtigen Betrachter.
     if (!QProcess::startDetached(QLatin1String("/usr/bin/xdg-open"),
-                                 QStringList() << ziel)) {
-        setzeFehler(QString::fromUtf8("Die Datei laesst sich nicht oeffnen: ") + ziel);
+                                 QStringList() << pfad)) {
+        setzeFehler(QString::fromUtf8("Die Datei laesst sich nicht oeffnen: ") + pfad);
     }
+}
+
+void Backend::umwandlungFertig(int code)
+{
+    QProcess *p = qobject_cast<QProcess *>(sender());
+    if (!p)
+        return;
+    const QString wav = p->property("wav").toString();
+    const QByteArray meldung = p->readAllStandardError();
+    p->deleteLater();
+    if (code != 0 || !QFile::exists(wav)) {
+        setzeFehler(QString::fromUtf8("Umwandeln fehlgeschlagen: ")
+                    + QString::fromUtf8(meldung).trimmed().left(120));
+        return;
+    }
+    setzeFehler(QString());
+    starteBetrachter(wav);
 }
 
 QString Backend::nachMyDocs(const QString &pfad)

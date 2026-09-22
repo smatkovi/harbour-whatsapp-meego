@@ -1114,8 +1114,24 @@ func getMimeType(filename string) string {
 }
 
 func getExtFromMime(mimeType string) string {
-	if ext, ok := mimeToExt[mimeType]; ok {
+	// "audio/ogg; codecs=opus" -- der Parameter gehoert nicht in den
+	// Schluessel. Ohne das Abschneiden fiel jede Sprachnachricht durch die
+	// Tabelle und landete als .bin auf der Platte.
+	haupt := strings.TrimSpace(strings.SplitN(mimeType, ";", 2)[0])
+	if ext, ok := mimeToExt[haupt]; ok {
 		return ext
+	}
+	// Letzter Ausweg: der Untertyp als Endung. ".ogg" ist allemal besser
+	// als ".bin" -- xdg-open entscheidet nach Endung, und fuer .bin gibt es
+	// keinen Betrachter, also passierte beim Antippen schlicht nichts.
+	if i := strings.Index(haupt, "/"); i > 0 && i+1 < len(haupt) {
+		unter := haupt[i+1:]
+		if j := strings.Index(unter, "+"); j > 0 {
+			unter = unter[:j] // svg+xml -> svg
+		}
+		if unter != "" && len(unter) <= 5 {
+			return "." + unter
+		}
 	}
 	return ".bin"
 }

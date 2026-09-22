@@ -106,6 +106,7 @@ private slots:
     void medienFertig();
     void anrufZustandFertig();
     void anrufBefehlFertig();
+    void umwandlungFertig(int code);
     void anhangFertig();
     void ereignisFertig();
     void kopplungFertig();
@@ -121,6 +122,7 @@ private:
     // Kopiert einen Anhang nach MyDocs/Downloads und gibt den
     // dortigen Pfad zurueck -- nur dort findet ihn das Geraet.
     QString nachMyDocs(const QString &pfad);
+    void starteBetrachter(const QString &pfad);
     void setzeFehler(const QString &text);
     int port();
 
