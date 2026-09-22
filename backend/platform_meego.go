@@ -17,6 +17,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -37,8 +38,8 @@ const enforceEncryptedDB = false
 // Signal-Sitzungen gleichzeitig; ohne busy_timeout scheitert der Zweite
 // sofort mit SQLITE_BUSY. Auf dem N950 sah das so aus:
 //
-//     app state sync critical_block failed: ... database is locked (5)
-//     Error decrypting message ...: failed to load session: database is locked
+//	app state sync critical_block failed: ... database is locked (5)
+//	Error decrypting message ...: failed to load session: database is locked
 //
 // Die Nachricht war nicht verloren, nur unentschluesselbar - whatsmeow
 // schickt eine Wiederholungsquittung. Aber der Kontaktabgleich blieb leer.
@@ -68,3 +69,32 @@ func medienWurzel(homeDir string) string {
 	}
 	return homeDir
 }
+
+// sipAnruf laesst das Telefon klingeln und gibt die beiden Tonenden zurueck.
+//
+// Gibt es keine Bruecke oder ist kein Telefon registriert, meldet es false
+// und der Anruf laeuft wie bisher ueber PulseAudio in der App.
+func sipAnruf(name, nummer string, beiAuflegen func()) (meowcallerQuelle, meowcallerSenke, bool) {
+	if bruecke == nil {
+		return nil, nil, false
+	}
+	bruecke.mu.Lock()
+	bereit := bruecke.registriert
+	bruecke.mu.Unlock()
+	if !bereit {
+		return nil, nil, false
+	}
+	if err := bruecke.klingeln(name, nummer, beiAuflegen); err != nil {
+		fmt.Println("📞 SIP: klingeln:", err)
+		return nil, nil, false
+	}
+	return sipQuelle{bruecke}, sipSenke{bruecke}, true
+}
+
+func sipAuflegen() {
+	if bruecke != nil {
+		bruecke.auflegen()
+	}
+}
+
+func sipStarten() { sipBrueckeStarten() }

@@ -32,3 +32,12 @@ func getDBConnectionString() string {
 // medienWurzel: auf Sailfish sind ~/Pictures und Konsorten die richtigen
 // Orte, der Tracker kennt sie.
 func medienWurzel(homeDir string) string { return homeDir }
+
+// Auf Sailfish gibt es die SIP-Bruecke nicht: dort zeigt die App ihre eigene
+// Anrufansicht, und ein lokaler SIP-Server haette keinen Abnehmer.
+func sipAnruf(name, nummer string, beiAuflegen func()) (meowcallerQuelle, meowcallerSenke, bool) {
+	return nil, nil, false
+}
+
+func sipAuflegen() {}
+func sipStarten()  {}

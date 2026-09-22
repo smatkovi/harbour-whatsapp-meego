@@ -89,6 +89,8 @@ var (
 )
 
 type callSession struct {
+	// Laeuft der Ton ueber die SIP-Bruecke statt ueber PulseAudio?
+	usesSip bool
 	call *meowcaller.Call
 
 	ID        string
@@ -180,6 +182,11 @@ func callDisplayName(user, alt string, isLid bool) string {
 	}
 	return name
 }
+
+// Kurznamen fuer die beiden Tonenden. Die Plattformdateien reichen sie
+// durch, ohne meowcaller selbst einzubinden.
+type meowcallerQuelle = meowcaller.AudioSource
+type meowcallerSenke = meowcaller.AudioSink
 
 func newCallSession(call *meowcaller.Call, outgoing bool) *callSession {
 	pj := call.Peer().ToNonAD()
@@ -275,6 +282,22 @@ func (s *callSession) startAudio() {
 		return
 	}
 	s.mu.Unlock()
+	// Erst der Weg ueber SIP: dann klingelt es in der Anrufansicht des
+	// Geraets, auch am Sperrbildschirm, und Annehmen/Ablehnen macht die
+	// systemeigene Oberflaeche. Gibt es keine Bruecke oder kein
+	// registriertes Telefon, faellt es auf PulseAudio in der App zurueck.
+	if quelle, senke, ok := sipAnruf(s.Name, s.Peer, func() {
+		s.finish("hangup")
+	}); ok {
+		s.mu.Lock()
+		s.usesSip = true
+		s.mu.Unlock()
+		s.call.Receive(senke)
+		s.call.Play(quelle)
+		bumpEvent()
+		return
+	}
+
 	a, err := openCallAudio(pluginActive())
 	if err != nil {
 		fmt.Printf("📞 audio unavailable: %v\n", err)
@@ -302,6 +325,13 @@ func (s *callSession) startAudio() {
 }
 
 func (s *callSession) finish(reason string) {
+	s.mu.Lock()
+	sip := s.usesSip
+	s.mu.Unlock()
+	if sip {
+		// BYE ans Telefon, sonst bleibt dessen Anrufansicht offen stehen.
+		sipAuflegen()
+	}
 	s.mu.Lock()
 	if s.Phase == "ended" {
 		s.mu.Unlock()

@@ -2990,6 +2990,8 @@ func main() {
 	redirectDaemonOutput()
 	daemonTakeover()
 	go startReplyService()
+	// Die SIP-Bruecke, falls die Plattform eine hat (siehe platform_*.go).
+	go sipStarten()
 	go daemonWatchdog()
 
 	// Bind the HTTP port FIRST, before the (potentially slow) Secrets

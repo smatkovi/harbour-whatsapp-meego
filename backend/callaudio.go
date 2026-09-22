@@ -70,6 +70,15 @@ func pulseServerString() string {
 	if s := pulseServerFromDBus(); s != "" {
 		return s
 	}
+	// Harmattan faehrt PulseAudio im Systemmodus: ein einziger Server fuer
+	// alle Benutzer, Socket unter /var/run/pulse/native. Die Bibliothek
+	// sucht dagegen im Laufzeitverzeichnis des Benutzers und scheitert dort
+	// mit "no such file or directory". Auf Sailfish gibt es den Pfad nicht,
+	// die Pruefung laesst ihn also unberuehrt.
+	const systemModus = "/var/run/pulse/native"
+	if st, err := os.Stat(systemModus); err == nil && st.Mode()&os.ModeSocket != 0 {
+		return "unix:" + systemModus
+	}
 	return ""
 }
 
@@ -522,8 +531,14 @@ func peakOf(buf []float32) float32 {
 // droid name first, then any source whose name is not a monitor, and the
 // default only as a last resort.
 func (a *callAudio) pickMicrophone() *pulse.Source {
-	if src, err := a.pc.SourceByID("source.primary_input"); err == nil && src != nil {
-		return src
+	// source.primary_input ist der Droid-Name auf Sailfish, source.record
+	// der von Harmattan. Beide direkt zu probieren ist billiger als die
+	// Liste zu durchsuchen -- und zuverlaessiger, weil die Reihenfolge der
+	// Liste nichts verspricht.
+	for _, name := range []string{"source.primary_input", "source.record"} {
+		if src, err := a.pc.SourceByID(name); err == nil && src != nil {
+			return src
+		}
 	}
 	if srcs, err := a.pc.ListSources(); err == nil {
 		for _, src := range srcs {
@@ -536,8 +551,11 @@ func (a *callAudio) pickMicrophone() *pulse.Source {
 			}
 		}
 	}
-	src, err := a.pc.DefaultSource()
-	if err != nil {
+	// Nicht DefaultSource(): das fragt mit leerem Namen und undefiniertem
+	// Index, und PulseAudio 0.9.19 auf Harmattan lehnt das mit "invalid
+	// argument" ab. Der Umweg ueber den Servernamen geht auf beiden.
+	src, err := a.defaultSourceByName()
+	if err != nil || src == nil {
 		return nil
 	}
 	if src != nil && strings.Contains(strings.ToLower(src.Name()+" "+src.ID()), "monitor") {
@@ -902,4 +920,22 @@ func (a *callAudio) Close() {
 		}
 	}
 	a.pc.Close()
+}
+
+// defaultSourceByName holt die Standardaufnahme ueber ihren Namen.
+//
+// pulse.DefaultSource() schickt GetSourceInfo mit undefiniertem Index und
+// leerem Namen. Neuere PulseAudio-Fassungen verstehen das als "die
+// Standardquelle"; 0.9.19 auf Harmattan antwortet mit "invalid argument".
+// GetServerInfo liefert den Namen, und danach laesst sich sauber
+// nachschlagen -- das funktioniert auf beiden Plattformen.
+func (a *callAudio) defaultSourceByName() (*pulse.Source, error) {
+	var info proto.GetServerInfoReply
+	if err := a.pc.RawRequest(&proto.GetServerInfo{}, &info); err != nil {
+		return nil, err
+	}
+	if info.DefaultSourceName == "" {
+		return nil, nil
+	}
+	return a.pc.SourceByID(info.DefaultSourceName)
 }

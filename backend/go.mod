@@ -3,9 +3,11 @@ module wa-client
 go 1.26.0
 
 require (
+	github.com/emiago/sipgo v1.6.0
 	github.com/godbus/dbus/v5 v5.2.0
 	github.com/jfreymuth/pulse v0.1.4-0.20260819162810-2376fb5395bc
 	github.com/mutecomm/go-sqlcipher/v4 v4.4.2
+	github.com/pion/rtp v1.10.5
 	github.com/purpshell/meowcaller v0.0.0-20260811012811-27a3c6b18657
 	github.com/rs/zerolog v1.35.1
 	go.mau.fi/whatsmeow v0.0.0-20260904121843-28bfe537ea6a
@@ -20,8 +22,12 @@ require (
 	github.com/coder/websocket v1.8.15 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/elliotchance/orderedmap/v3 v3.1.0 // indirect
+	github.com/gobwas/httphead v0.1.0 // indirect
+	github.com/gobwas/pool v0.2.1 // indirect
+	github.com/gobwas/ws v1.3.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hajimehoshi/go-mp3 v0.3.4 // indirect
+	github.com/icholy/digest v1.1.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
