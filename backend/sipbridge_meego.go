@@ -167,6 +167,9 @@ type sipBruecke struct {
 	cl      *sipgo.Client
 	dc      *sipgo.DialogClientCache
 	sitzung *sipgo.DialogClientSession
+	// Bricht ein noch klingelndes INVITE ab (CANCEL statt BYE).
+	abbruch context.CancelFunc
+	angenommen bool
 
 	// Wohin das Telefon erreichbar ist, aus seinem REGISTER.
 	kontakt     *sip.Uri
@@ -307,12 +310,19 @@ func (b *sipBruecke) klingeln(name, nummer string, beiAuflegen func()) error {
 	if err != nil {
 		return err
 	}
+	// Eigener Kontext fuers Warten auf die Antwort: wird er abgebrochen,
+	// schickt sipgo ein CANCEL. Genau das braucht es, wenn der Anruf auf
+	// einem anderen verknuepften Geraet angenommen wird -- WhatsApp laesst
+	// ja alle klingeln, und ohne CANCEL klingelte dieses hier weiter.
+	warteCtx, abbrechen := context.WithCancel(context.Background())
 	b.mu.Lock()
 	b.sitzung = sitzung
+	b.abbruch = abbrechen
+	b.angenommen = false
 	b.mu.Unlock()
 
 	go func() {
-		err := sitzung.WaitAnswer(context.Background(), sipgo.AnswerOptions{
+		err := sitzung.WaitAnswer(warteCtx, sipgo.AnswerOptions{
 			OnResponse: func(res *sip.Response) error {
 				if res.StatusCode == 200 {
 					b.gegenstelleAusSDP(string(res.Body()))
@@ -336,6 +346,7 @@ func (b *sipBruecke) klingeln(name, nummer string, beiAuflegen func()) error {
 		}
 		b.mu.Lock()
 		b.laeuft = true
+		b.angenommen = true
 		b.mu.Unlock()
 		fmt.Println("📞 SIP: angenommen, Ton laeuft")
 
@@ -357,11 +368,25 @@ func (b *sipBruecke) klingeln(name, nummer string, beiAuflegen func()) error {
 func (b *sipBruecke) auflegen() {
 	b.mu.Lock()
 	s := b.sitzung
+	abbrechen := b.abbruch
+	angenommen := b.angenommen
 	b.laeuft = false
+	b.angenommen = false
 	b.beiAuflegen = nil
 	b.sitzung = nil
+	b.abbruch = nil
 	b.mu.Unlock()
 	if s == nil {
+		return
+	}
+	if !angenommen {
+		// Noch kein 200 OK: BYE wuerde hier scheitern ("can not send as no
+		// invite response present") und das Telefon klingelte weiter. Der
+		// Abbruch des Wartekontexts loest stattdessen ein CANCEL aus.
+		if abbrechen != nil {
+			abbrechen()
+		}
+		fmt.Println("📞 SIP: klingeln abgebrochen")
 		return
 	}
 	_ = s.Bye(context.Background())
