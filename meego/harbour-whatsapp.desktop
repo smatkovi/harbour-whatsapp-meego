@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=WhatsApp
+Exec=/usr/bin/invoker --type=d /opt/harbour-whatsapp/bin/harbour-whatsapp
+Icon=/usr/share/icons/hicolor/80x80/apps/harbour-whatsapp.png
+X-Window-Icon=
+X-HildonDesk-ShowInToolbar=true
+X-Osso-Type=application/x-executable

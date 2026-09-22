@@ -1,0 +1,19 @@
+Package: harbour-whatsapp
+Version: @VERSION@
+Section: user/network
+Priority: optional
+Architecture: armel
+Depends: libqt4-declarative, libqt4-script, libqt4-gui, libqt4-network, qt-components
+Maintainer: Sebastian Matkovich <sebastian.matkovich@gmail.com>
+Description: WhatsApp fuer das N9 und N950
+ Verbindet sich als verknuepftes Geraet mit einem WhatsApp-Konto, ueber
+ dasselbe Go-Backend wie die Sailfish-Fassung: whatsmeow spricht das
+ Protokoll, und Gos eigener TLS-Stack macht sich unabhaengig von der
+ betagten OpenSSL des Geraets.
+ .
+ Die Oberflaeche ist fuer Harmattan neu geschrieben - Chatliste, Verlauf,
+ Senden und die Anmeldung per Telefonnummer. Angemeldet wird mit einem
+ achtstelligen Code, den man am Haupttelefon eingibt.
+Maemo-Display-Name: WhatsApp
+XB-Maemo-Icon-26:
+@ICON@
