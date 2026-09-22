@@ -185,11 +185,11 @@ func callDisplayName(user, alt string, isLid bool) string {
 
 // sipAnrufWenn ruft die Bruecke nur, wenn die Bedingung stimmt -- spart den
 // Plattformdateien eine zweite Fassung.
-func sipAnrufWenn(wenn bool, name, nummer string, beiAuflegen func()) (meowcallerQuelle, meowcallerSenke, bool) {
+func sipAnrufWenn(wenn bool, name, nummer string, beiAnnahme, beiAuflegen func()) (meowcallerQuelle, meowcallerSenke, bool) {
 	if !wenn {
 		return nil, nil, false
 	}
-	return sipAnruf(name, nummer, beiAuflegen)
+	return sipAnruf(name, nummer, beiAnnahme, beiAuflegen)
 }
 
 // Kurznamen fuer die beiden Tonenden. Die Plattformdateien reichen sie
@@ -305,7 +305,25 @@ func (s *callSession) startAudio() {
 	s.mu.Lock()
 	eingehend := !s.Outgoing
 	s.mu.Unlock()
+
+	// Bei einem eingehenden Anruf hat onIncomingCall die Bruecke schon
+	// gerufen, und das Telefon hat abgehoben -- die Tonenden stehen also
+	// bereits. Ein zweites INVITE wuerde nur ein zweites Mal klingeln.
+	if eingehend && sipLaeuft() {
+		quelle, senke := sipStroeme()
+		s.mu.Lock()
+		s.usesSip = true
+		s.mu.Unlock()
+		s.call.Receive(senke)
+		s.call.Play(quelle)
+		fmt.Println("📞 SIP: Ton an die stehende Verbindung gehaengt")
+		bumpEvent()
+		return
+	}
+
 	if quelle, senke, ok := sipAnrufWenn(eingehend, s.Name, s.Peer, func() {
+		// Beim Ton-Aufbau gibt es nichts mehr anzunehmen.
+	}, func() {
 		s.finish("hangup")
 	}); ok {
 		s.mu.Lock()
@@ -679,6 +697,39 @@ func onIncomingCall(call *meowcaller.Call) {
 	s.wire()
 	fmt.Printf("📞 incoming call %s from %s (%s)\n", s.ID, s.Peer, s.Name)
 	mceCallState("ringing")
+
+	// Die SIP-Bruecke gehoert HIERHIN, nicht in startAudio().
+	//
+	// Dort lief sie erst, wenn der Anruf schon bereit war -- also nachdem
+	// jemand abgehoben hat. Bei einem eingehenden Anruf ist das Henne und
+	// Ei: das Telefon soll ja gerade klingeln, damit man abheben kann. Im
+	// Feldprotokoll stand deshalb kein einziger SIP-Anstoss, der Anruf
+	// wurde ueber mce (vom Bus abgelehnt) und eine Benachrichtigung
+	// (Dienst nicht vorhanden) gemeldet, und endete mit
+	// "accepted_elsewhere".
+	//
+	// Abgehoben wird auf dem Telefon; erst dessen 200 OK nimmt den
+	// WhatsApp-Anruf an.
+	if _, _, ok := sipAnruf(s.Name, s.Peer, func() {
+		s.mu.Lock()
+		s.Answered = true
+		s.usesSip = true
+		s.mu.Unlock()
+		closeCallNotification(s)
+		if err := s.call.Answer(); err != nil {
+			fmt.Printf("📞 SIP: Anruf nicht annehmbar: %v\n", err)
+			return
+		}
+		mceCallState("active")
+		bumpEvent()
+	}, func() {
+		s.finish("hangup")
+	}); ok {
+		fmt.Println("📞 SIP: Telefon klingelt")
+		s.mu.Lock()
+		s.usesSip = true
+		s.mu.Unlock()
+	}
 	// Always ring ourselves. The plugin acknowledging a call only proves it
 	// registered a handler with the call engine - the field log shows
 	// "system call UI took call" for calls that never appeared or rang

@@ -76,7 +76,7 @@ func medienWurzel(homeDir string) string {
 //
 // Gibt es keine Bruecke oder ist kein Telefon registriert, meldet es false
 // und der Anruf laeuft wie bisher ueber PulseAudio in der App.
-func sipAnruf(name, nummer string, beiAuflegen func()) (meowcallerQuelle, meowcallerSenke, bool) {
+func sipAnruf(name, nummer string, beiAnnahme, beiAuflegen func()) (meowcallerQuelle, meowcallerSenke, bool) {
 	if bruecke == nil {
 		return nil, nil, false
 	}
@@ -86,11 +86,27 @@ func sipAnruf(name, nummer string, beiAuflegen func()) (meowcallerQuelle, meowca
 	if !bereit {
 		return nil, nil, false
 	}
-	if err := bruecke.klingeln(name, nummer, beiAuflegen); err != nil {
+	if err := bruecke.klingeln(name, nummer, beiAnnahme, beiAuflegen); err != nil {
 		fmt.Println("📞 SIP: klingeln:", err)
 		return nil, nil, false
 	}
 	return sipQuelle{bruecke}, sipSenke{bruecke}, true
+}
+
+// sipLaeuft sagt, ob gerade ein SIP-Gespraech steht -- dann sind die
+// Tonenden schon da und es waere falsch, ein zweites Mal zu klingeln.
+func sipLaeuft() bool {
+	if bruecke == nil {
+		return false
+	}
+	bruecke.mu.Lock()
+	defer bruecke.mu.Unlock()
+	return bruecke.laeuft
+}
+
+// sipStroeme gibt die Tonenden einer bereits stehenden Verbindung.
+func sipStroeme() (meowcallerQuelle, meowcallerSenke) {
+	return sipQuelle{bruecke}, sipSenke{bruecke}
 }
 
 func sipAuflegen() {

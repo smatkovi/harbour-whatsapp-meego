@@ -35,7 +35,11 @@ func medienWurzel(homeDir string) string { return homeDir }
 
 // Auf Sailfish gibt es die SIP-Bruecke nicht: dort zeigt die App ihre eigene
 // Anrufansicht, und ein lokaler SIP-Server haette keinen Abnehmer.
-func sipAnruf(name, nummer string, beiAuflegen func()) (meowcallerQuelle, meowcallerSenke, bool) {
+func sipLaeuft() bool { return false }
+
+func sipStroeme() (meowcallerQuelle, meowcallerSenke) { return nil, nil }
+
+func sipAnruf(name, nummer string, beiAnnahme, beiAuflegen func()) (meowcallerQuelle, meowcallerSenke, bool) {
 	return nil, nil, false
 }
 

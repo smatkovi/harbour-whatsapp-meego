@@ -187,6 +187,9 @@ type sipBruecke struct {
 
 	// Wird gerufen, wenn das Telefon auflegt (BYE) oder ablehnt.
 	beiAuflegen func()
+	// Wird gerufen, sobald das Telefon abgehoben hat. Erst dann darf der
+	// WhatsApp-Anruf angenommen werden.
+	beiAnnahme func()
 }
 
 var bruecke *sipBruecke
@@ -290,10 +293,11 @@ func (b *sipBruecke) beiBye(req *sip.Request, tx sip.ServerTransaction) {
 
 // klingeln schickt ein INVITE ans Telefon. Ab hier uebernimmt Harmattans
 // eigene Anrufansicht -- samt Sperrbildschirm.
-func (b *sipBruecke) klingeln(name, nummer string, beiAuflegen func()) error {
+func (b *sipBruecke) klingeln(name, nummer string, beiAnnahme, beiAuflegen func()) error {
 	b.mu.Lock()
 	kontakt := b.kontakt
 	b.beiAuflegen = beiAuflegen
+	b.beiAnnahme = beiAnnahme
 	b.mu.Unlock()
 	if kontakt == nil {
 		return fmt.Errorf("kein Telefon registriert")
@@ -347,8 +351,16 @@ func (b *sipBruecke) klingeln(name, nummer string, beiAuflegen func()) error {
 		b.mu.Lock()
 		b.laeuft = true
 		b.angenommen = true
+		annahme := b.beiAnnahme
 		b.mu.Unlock()
 		fmt.Println("📞 SIP: angenommen, Ton laeuft")
+		// Jetzt erst darf der WhatsApp-Anruf angenommen werden: bis hierhin
+		// hat nur das Telefon geklingelt. Ohne diesen Rueckruf klingelte es
+		// zwar, aber das Abheben blieb folgenlos -- der Anruf lief auf der
+		// WhatsApp-Seite weiter, bis ihn ein anderes Geraet annahm.
+		if annahme != nil {
+			annahme()
+		}
 
 		// Auf das BYE des Telefons warten.
 		<-sitzung.Context().Done()
@@ -373,6 +385,7 @@ func (b *sipBruecke) auflegen() {
 	b.laeuft = false
 	b.angenommen = false
 	b.beiAuflegen = nil
+	b.beiAnnahme = nil
 	b.sitzung = nil
 	b.abbruch = nil
 	b.mu.Unlock()
