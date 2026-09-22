@@ -2991,6 +2991,16 @@ func sendVoice(to string, filePath string, seconds uint32) error {
 func main() {
 	// Initialize paths first
 	initPaths()
+	// Nach initPaths, weil erst dort das Arbeitsverzeichnis steht -- und vor
+	// allem anderen, damit eine zweite Instanz die Dateien gar nicht erst
+	// anfasst. Zwei Backends nebeneinander haben schon einmal den
+	// Nachrichtenspeicher ueberschrieben.
+	if wd, werr := os.Getwd(); werr == nil {
+		if lerr := sperreNehmen(wd); lerr != nil {
+			fmt.Printf("🛑 %v - dieser Start endet hier\n", lerr)
+			os.Exit(0)
+		}
+	}
 	redirectDaemonOutput()
 	daemonTakeover()
 	go startReplyService()
