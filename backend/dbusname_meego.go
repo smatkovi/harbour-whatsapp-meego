@@ -21,6 +21,9 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -48,5 +51,38 @@ func sitzungsNamenBeanspruchen() {
 		fmt.Printf("⚠ %s gehoert bereits einer anderen Instanz\n", dienstName)
 		return
 	}
+	// Eine Methode dazu: das Antippen der Klingelmeldung ruft sie, und
+	// sie holt die App nach vorn. Ohne einen solchen Weg bliebe die
+	// Meldung ein Hinweis, den man nicht annehmen kann.
+	if err := conn.Export(oberflaeche{}, dbus.ObjectPath("/"), dienstName); err != nil {
+		fmt.Printf("⚠ Methode nicht exportierbar (%v)\n", err)
+	}
 	fmt.Printf("🔌 Dienstname %s beansprucht\n", dienstName)
+}
+
+// oberflaeche traegt die Methoden, die von aussen aufgerufen werden.
+type oberflaeche struct{}
+
+// Anzeigen startet die App. Laeuft sie schon, holt der Fenstermanager sie
+// nach vorn -- ein zweiter Start endet an ihrer eigenen Pruefung.
+func (oberflaeche) Anzeigen() *dbus.Error {
+	// Die App liegt neben dem Dienst.
+	eigen, err := os.Executable()
+	if err != nil {
+		return dbus.MakeFailedError(err)
+	}
+	pfad := filepath.Join(filepath.Dir(eigen), "harbour-whatsapp")
+	if _, err := os.Stat(pfad); err != nil {
+		return dbus.MakeFailedError(err)
+	}
+	fmt.Println("🪟 Anzeigen: starte die Oberflaeche")
+	befehl := exec.Command(pfad)
+	befehl.Env = os.Environ()
+	if err := befehl.Start(); err != nil {
+		return dbus.MakeFailedError(err)
+	}
+	// Nicht auf sie warten -- sonst bleibt ein Zombie zurueck, wenn sie
+	// sich beendet.
+	go func() { _ = befehl.Wait() }()
+	return nil
 }

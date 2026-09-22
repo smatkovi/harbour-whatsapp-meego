@@ -278,3 +278,68 @@ func sipKontoAnstossen() {
 		return
 	}
 }
+
+// --- Klingelmeldung ------------------------------------------------------
+//
+// Der Benachrichtigungsdienst von Harmattan heisst nicht
+// org.freedesktop.Notifications -- den gibt es hier gar nicht, und der
+// Versuch endete mit "was not provided by any .service files". Er heisst
+// com.meego.core.MNotificationManager, und welche Art Meldung daraus wird,
+// entscheidet der Ereignistyp: unser harbour-whatsapp.call traegt
+// class=system, und das erscheint ueber allem, auch am Sperrbildschirm.
+
+const meldungsTyp = "harbour-whatsapp.call"
+
+func plattformKlingelmeldung(titel, name string) (uint32, bool) {
+	conn, err := dbus.SessionBus()
+	if err != nil {
+		return 0, false
+	}
+	obj := conn.Object("com.meego.core.MNotificationManager",
+		dbus.ObjectPath("/notificationmanager"))
+
+	var kennung uint32
+	if err := obj.Call("com.meego.core.MNotificationManager.notificationUserId",
+		0).Store(&kennung); err != nil {
+		fmt.Printf("📞 Meldung: keine Kennung (%v)\n", err)
+		return 0, false
+	}
+
+	// Beim Antippen holt der Dienst die App nach vorn. Die Aktion ist ein
+	// D-Bus-Aufruf in Textform: Dienst, Pfad, Schnittstelle, Methode.
+	aktion := dienstName + " / " + dienstName + " Anzeigen"
+
+	var id uint32
+	ruf := obj.Call("com.meego.core.MNotificationManager.addNotification", 0,
+		kennung, uint32(0), meldungsTyp, titel, name, aktion,
+		"icon-m-telephony-call-ongoing", uint32(1), "whatsapp-anruf")
+	if ruf.Err != nil {
+		fmt.Printf("📞 Meldung nicht absetzbar: %v\n", ruf.Err)
+		return 0, false
+	}
+	if err := ruf.Store(&id); err != nil {
+		return 0, false
+	}
+	fmt.Printf("📞 Klingelmeldung %d abgesetzt\n", id)
+	return id, true
+}
+
+func plattformMeldungSchliessen(id uint32) bool {
+	if id == 0 {
+		return true
+	}
+	conn, err := dbus.SessionBus()
+	if err != nil {
+		return false
+	}
+	obj := conn.Object("com.meego.core.MNotificationManager",
+		dbus.ObjectPath("/notificationmanager"))
+	var kennung uint32
+	if err := obj.Call("com.meego.core.MNotificationManager.notificationUserId",
+		0).Store(&kennung); err != nil {
+		return false
+	}
+	_ = obj.Call("com.meego.core.MNotificationManager.removeNotification", 0,
+		kennung, id).Err
+	return true
+}

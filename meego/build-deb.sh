@@ -69,6 +69,12 @@ cp meego/pybridge/icon-m-service-whatsapp.png \
    meego/pybridge/icon-s-service-whatsapp.png \
    "$STAGE/usr/share/themes/blanco/meegotouch/icons/"
 
+# Der Ereignistyp fuer die Klingelmeldung. class=system darin sorgt
+# dafuer, dass sie ueber allem erscheint, auch am Sperrbildschirm.
+mkdir -p "$STAGE/usr/share/meegotouch/notifications/eventtypes"
+cp meego/harbour-whatsapp.call.conf \
+   "$STAGE/usr/share/meegotouch/notifications/eventtypes/"
+
 cp meego/postinst meego/prerm "$STAGE/DEBIAN/"
 chmod 755 "$STAGE/DEBIAN/postinst" "$STAGE/DEBIAN/prerm"
 

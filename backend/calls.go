@@ -823,6 +823,20 @@ func mceCallState(state string) {
 
 // ---- Notification with ringtone feedback ----
 func (s *callSession) notifyRinging() {
+	prefsMutex.RLock()
+	titel := prefs["call_incoming_label"]
+	prefsMutex.RUnlock()
+	if titel == "" {
+		titel = "WhatsApp-Anruf"
+	}
+	// Harmattan zuerst: dort gibt es org.freedesktop.Notifications nicht.
+	if id, ok := plattformKlingelmeldung(titel, s.Name); ok {
+		s.mu.Lock()
+		s.notifID = id
+		s.mu.Unlock()
+		return
+	}
+
 	conn, err := dbus.SessionBus()
 	if err != nil {
 		fmt.Printf("📞 notification bus error: %v\n", err)
@@ -874,6 +888,9 @@ func closeCallNotification(s *callSession) {
 	s.notifID = 0
 	s.mu.Unlock()
 	if id == 0 {
+		return
+	}
+	if plattformMeldungSchliessen(id) {
 		return
 	}
 	if conn, err := dbus.SessionBus(); err == nil {

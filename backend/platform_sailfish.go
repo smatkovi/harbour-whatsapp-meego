@@ -63,3 +63,9 @@ func musikFortsetzen() {}
 
 // Auf Sailfish gibt es keine SIP-Bruecke.
 func sipKontoAnstossen() {}
+
+// Auf Sailfish klingelt die gewoehnliche Meldung ueber
+// org.freedesktop.Notifications -- siehe notifyRinging.
+func plattformKlingelmeldung(titel, name string) (uint32, bool) { return 0, false }
+
+func plattformMeldungSchliessen(id uint32) bool { return false }
