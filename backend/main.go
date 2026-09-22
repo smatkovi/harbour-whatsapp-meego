@@ -2919,7 +2919,7 @@ func main() {
 	var listener net.Listener
 	var port int
 	for p := 8085; p <= 8089; p++ {
-		l, lerr := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
+		l, lerr := listenLocal(p)
 		if lerr == nil {
 			listener = l
 			port = p
@@ -2934,7 +2934,15 @@ func main() {
 	boundPort = port
 	os.WriteFile("backend.port", []byte(fmt.Sprintf("%d", port)), 0600)
 	fmt.Printf("🚀 Backend listening on http://127.0.0.1:%d (initializing…)\n", port)
-	go http.Serve(listener, nil)
+	// Den Rueckgabewert NICHT verwerfen: als hier noch "go http.Serve(...)"
+	// stand, kehrte Serve auf Harmattan sofort mit "accept4: function not
+	// implemented" zurueck -- und niemand erfuhr davon. Der Prozess lief
+	// weiter und schien zu lauschen, nahm aber nie eine Verbindung an.
+	go func() {
+		if serr := http.Serve(listener, nil); serr != nil {
+			fmt.Printf("❌ HTTP-Dienst beendet: %v\n", serr)
+		}
+	}()
 	go watchForDaemon()
 
 	http.HandleFunc("/daemon/restart", func(w http.ResponseWriter, r *http.Request) {
