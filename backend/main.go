@@ -3001,6 +3001,10 @@ func main() {
 			os.Exit(0)
 		}
 	}
+	// Den Dienstnamen beanspruchen, bevor irgendetwas anderes passiert:
+	// ohne ihn gilt eine D-Bus-Aktivierung als gescheitert, und D-Bus
+	// startet beim naechsten Anstoss die naechste Instanz.
+	sitzungsNamenBeanspruchen()
 	redirectDaemonOutput()
 	daemonTakeover()
 	go startReplyService()
@@ -5728,6 +5732,9 @@ func watchNetwork() {
 	ch := make(chan *dbus.Signal, 16)
 	conn.Signal(ch)
 	fmt.Printf("📶 connman watcher active (state=%s)\n", netState)
+	// Auf Harmattan heisst der Verbindungsdienst icd2; der Waechter dort
+	// liefert den sofortigen Anstoss, den connman hier nicht geben kann.
+	go watchNetworkPlatform()
 	for sig := range ch {
 		if sig.Name != "net.connman.Manager.PropertyChanged" || len(sig.Body) < 2 {
 			continue

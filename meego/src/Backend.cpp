@@ -721,3 +721,89 @@ void Backend::anrufBefehlFertig()
     setzeFehler(QString());
     anrufAbfragen();
 }
+
+void Backend::tonVorbereiten(const QString &pfad)
+{
+    if (pfad.isEmpty())
+        return;
+    // Die Musik-App spielt nur, was der Tracker indiziert hat -- eine frisch
+    // heruntergeladene Sprachnachricht steht dort nicht und landete als
+    // "nicht in der Wiedergabeliste". Und ein Sprachmemo gehoert ohnehin
+    // nicht in die Musikbibliothek. Die App spielt es deshalb selbst.
+    const bool opus = pfad.endsWith(QLatin1String(".ogg"), Qt::CaseInsensitive)
+                   || pfad.endsWith(QLatin1String(".opus"), Qt::CaseInsensitive);
+    if (!opus) {
+        emit tonBereit(pfad);
+        return;
+    }
+    const QString wav = pfad.left(pfad.lastIndexOf(QLatin1Char('.'))) + QLatin1String(".wav");
+    if (QFile::exists(wav) && QFileInfo(wav).size() > 0) {
+        emit tonBereit(wav);
+        return;
+    }
+    const QString ffmpeg = QLatin1String("/opt/ffmpeg/bin/ffmpeg");
+    if (!QFile::exists(ffmpeg)) {
+        emit tonFehler(QString::fromUtf8("Sprachnachrichten brauchen ffmpeg (Paket ffmpeg-n9)."));
+        return;
+    }
+    QProcess *wandler = new QProcess(this);
+    wandler->setProperty("wav", wav);
+    connect(wandler, SIGNAL(finished(int, QProcess::ExitStatus)),
+            this, SLOT(tonUmgewandelt(int)));
+    wandler->start(ffmpeg, QStringList()
+                   << QLatin1String("-loglevel") << QLatin1String("error")
+                   << QLatin1String("-y")
+                   << QLatin1String("-i") << pfad
+                   << QLatin1String("-ac") << QLatin1String("1")
+                   << QLatin1String("-ar") << QLatin1String("44100")
+                   << wav);
+}
+
+void Backend::tonUmgewandelt(int code)
+{
+    QProcess *p = qobject_cast<QProcess *>(sender());
+    if (!p)
+        return;
+    const QString wav = p->property("wav").toString();
+    const QByteArray meldung = p->readAllStandardError();
+    p->deleteLater();
+    if (code != 0 || !QFile::exists(wav)) {
+        emit tonFehler(QString::fromUtf8("Umwandeln fehlgeschlagen: ")
+                       + QString::fromUtf8(meldung).trimmed().left(120));
+        return;
+    }
+    emit tonBereit(wav);
+}
+
+void Backend::abmelden()
+{
+    QNetworkReply *r = hole(QLatin1String("/logout"));
+    connect(r, SIGNAL(finished()), this, SLOT(abmeldenFertig()));
+}
+
+void Backend::abmeldenFertig()
+{
+    QNetworkReply *r = qobject_cast<QNetworkReply *>(sender());
+    if (!r)
+        return;
+    r->deleteLater();
+    if (r->error() != QNetworkReply::NoError) {
+        setzeFehler(QString::fromUtf8(r->readAll()).trimmed());
+        return;
+    }
+    // Der lokale Stand ist weg; die Oberflaeche darf nicht auf alten Listen
+    // sitzenbleiben, sonst zeigt sie Chats eines Kontos, das nicht mehr
+    // verknuepft ist.
+    m_chats.clear();
+    m_nachrichten.clear();
+    m_offenerChat.clear();
+    m_gekoppelt = false;
+    m_verbunden = false;
+    m_code.clear();
+    m_zustand = QLatin1String("waiting_for_pair");
+    setzeFehler(QString());
+    emit chatsChanged();
+    emit nachrichtenChanged();
+    emit statusChanged();
+    abfragen();
+}

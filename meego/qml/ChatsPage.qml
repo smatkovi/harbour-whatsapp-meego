@@ -22,7 +22,23 @@ Page {
                 text: "Zustand: " + Dienst.zustand
                       + (Dienst.nummer !== "" ? " · " + Dienst.nummer : "")
             }
+            MenuItem {
+                text: "Gerät trennen"
+                onClicked: trennenFrage.open()
+            }
         }
+    }
+
+    QueryDialog {
+        id: trennenFrage
+        titleText: "Gerät trennen"
+        message: "Die Verknüpfung mit WhatsApp wird aufgehoben und der "
+                 + "lokale Verlauf gelöscht. Deine Nachrichten auf dem "
+                 + "Haupttelefon bleiben unberührt. Zum Weiterbenutzen "
+                 + "musst du danach neu verknüpfen."
+        acceptButtonText: "Trennen"
+        rejectButtonText: "Abbrechen"
+        onAccepted: Dienst.abmelden()
     }
 
     Rectangle {

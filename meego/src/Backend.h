@@ -77,7 +77,12 @@ public:
     // automatisch fuer jeden Verlauf tun.
     Q_INVOKABLE void medienLaden(const QString &nachrichtenId);
     Q_INVOKABLE void oeffnen(const QString &pfad);
+    // Liefert ueber tonBereit() einen Pfad, den QtMultimediaKit
+    // abspielen kann -- Opus wird vorher nach WAV gewandelt.
+    Q_INVOKABLE void tonVorbereiten(const QString &pfad);
     Q_INVOKABLE QString groesse(const QVariant &bytes) const;
+    // Trennt das Geraet von WhatsApp und raeumt den lokalen Stand.
+    Q_INVOKABLE void abmelden();
     Q_INVOKABLE void anrufen(const QString &jid);
     Q_INVOKABLE void anrufAnnehmen();
     Q_INVOKABLE void anrufAblehnen();
@@ -97,6 +102,8 @@ signals:
     void nachrichtenChanged();
     void fehlerChanged();
     void anrufChanged();
+    void tonBereit(const QString &pfad);
+    void tonFehler(const QString &text);
 
 private slots:
     void statusFertig();
@@ -106,7 +113,9 @@ private slots:
     void medienFertig();
     void anrufZustandFertig();
     void anrufBefehlFertig();
+    void abmeldenFertig();
     void umwandlungFertig(int code);
+    void tonUmgewandelt(int code);
     void anhangFertig();
     void ereignisFertig();
     void kopplungFertig();

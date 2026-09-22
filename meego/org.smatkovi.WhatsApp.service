@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.smatkovi.WhatsApp
+Exec=/bin/sh -c "exec /opt/harbour-whatsapp/bin/wa-backend >> /home/user/.local/share/harbour/harbour-whatsapp/backend.log 2>&1"

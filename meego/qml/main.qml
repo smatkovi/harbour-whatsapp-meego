@@ -26,6 +26,10 @@ PageStackWindow {
         onStatusChanged: {
             if (Dienst.gekoppelt && pageStack.currentPage === kopplungsSeite)
                 pageStack.replace(chatsSeite)
+            // Und zurueck, wenn getrennt wurde -- sonst bliebe eine
+            // Chatliste stehen, zu der es kein Konto mehr gibt.
+            else if (!Dienst.gekoppelt && pageStack.currentPage !== kopplungsSeite)
+                pageStack.replace(kopplungsSeite)
         }
     }
 }

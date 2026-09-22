@@ -283,7 +283,14 @@ Page {
         anchors.right: parent.right
         height: 72
 
-        Rectangle { anchors.fill: parent; color: "#101010" }
+        // Auch hier schwarz; die Trennlinie setzt die Eingabe vom Verlauf
+        // ab, ohne den Hintergrund aufzuhellen.
+        Rectangle { anchors.fill: parent; color: "#000000" }
+        Rectangle {
+            anchors.top: parent.top
+            width: parent.width; height: 1
+            color: "#262626"
+        }
 
         ToolIcon {
             id: klammer

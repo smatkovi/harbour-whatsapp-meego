@@ -34,6 +34,19 @@ cp meego/harbour-whatsapp.desktop "$STAGE/usr/share/applications/"
 # postinst/prerm tragen whatsapp.local in /etc/hosts ein und wieder aus:
 # die Kontoverwaltung prueft die SIP-Adresse wie eine Mailadresse und nimmt
 # weder einen nackten Namen noch eine IP.
+# Der Sitzungs-Upstart-Job: damit laeuft das Backend nach dem Einschalten
+# von selbst, nimmt Nachrichten und Anrufe entgegen und haelt die
+# SIP-Bruecke offen, auch wenn die App zu ist. ~/.config/upstart laeuft als
+# "user" -- pybridge liefert seinen Job auf demselben Weg aus.
+# Daemon: D-Bus-Aktivierung plus ein Upstart-Job, der sie nur anstoesst.
+# Jobs unter ~/.config/upstart liest auf diesem Geraet niemand (nachgesehen),
+# und nach /etc/init/xsession/ kommt ein unsigniertes Paket nicht -- Aegis
+# verweigert dort jede Datei ohne Referenz-Hash. Der Sitzungs-D-Bus ist der
+# Weg, der bleibt; derselbe traegt den Mastodon-Feed.
+mkdir -p "$STAGE/usr/share/dbus-1/services" "$STAGE/etc/init/apps"
+cp meego/org.smatkovi.WhatsApp.service "$STAGE/usr/share/dbus-1/services/"
+cp meego/harbour-whatsapp-trigger.conf "$STAGE/etc/init/apps/harbour-whatsapp.conf"
+
 cp meego/postinst meego/prerm "$STAGE/DEBIAN/"
 chmod 755 "$STAGE/DEBIAN/postinst" "$STAGE/DEBIAN/prerm"
 

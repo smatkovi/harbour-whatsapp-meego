@@ -12,4 +12,14 @@ if ! grep -q "[[:space:]]$NAME\([[:space:]]\|$\)" /etc/hosts 2>/dev/null; then
     printf '127.0.0.1 %s\n' "$NAME" >> /etc/hosts
     echo "harbour-whatsapp: $NAME in /etc/hosts eingetragen"
 fi
+# Den Anstossjob gleich starten, statt bis zum naechsten Hochfahren zu
+# warten. Er selbst startet nichts, er bittet den Sitzungs-D-Bus, den Dienst
+# zu aktivieren. Fehlschlag ist kein Grund, die Installation scheitern zu
+# lassen: beim Einrichten ohne laufende Sitzung gibt es schlicht nichts
+# anzustossen.
+if [ -x /sbin/initctl ]; then
+    /sbin/initctl start apps/harbour-whatsapp \
+        >/dev/null 2>&1 || true
+fi
+
 exit 0

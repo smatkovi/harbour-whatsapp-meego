@@ -7,6 +7,11 @@ import com.nokia.meego 1.0
 Page {
     id: seite
 
+    // Durchgaengig schwarz wie die uebrigen Seiten. Ohne das zeichnet
+    // PageStackWindow seinen Themenhintergrund, und die Kopplungsseite
+    // stach als einzige hell heraus.
+    Rectangle { anchors.fill: parent; color: "#000000" }
+
     Flickable {
         anchors.fill: parent
         anchors.margins: 16
@@ -40,13 +45,23 @@ Page {
                 width: parent.width
                 placeholderText: "43…"
                 inputMethodHints: Qt.ImhDialableCharactersOnly
-                enabled: Dienst.verbunden && Dienst.kopplungscode === ""
+                // Tippen muss immer gehen. Frueher haing das Feld an
+                // Dienst.verbunden -- nach einem Trennen ist die Verbindung
+                // aber weg, und dann liess sich die Nummer nicht mehr
+                // eingeben, mit der man sich gerade neu verknuepfen will.
+                // Auf die Verbindung wartet nur der Knopf.
+                enabled: Dienst.kopplungscode === ""
             }
 
             Button {
                 width: parent.width
                 text: "Code anfordern"
-                enabled: nummernFeld.text.length > 5 && Dienst.verbunden
+                // Nicht an Dienst.verbunden haengen: nach einem Trennen ist
+                // die Verbindung weg, und der Knopf blieb tot. Das Backend
+                // wartet beim /pair ohnehin bis zu 15 Sekunden auf sie und
+                // meldet sonst einen Fehler -- besser eine Meldung als ein
+                // Knopf, den man nicht druecken kann.
+                enabled: nummernFeld.text.length > 5
                          && Dienst.kopplungscode === ""
                 onClicked: Dienst.koppeln(nummernFeld.text)
             }

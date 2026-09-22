@@ -10,4 +10,9 @@ if [ -f /etc/hosts ] && grep -q "^127\.0\.0\.1[[:space:]]\+$NAME[[:space:]]*$" /
     mv /etc/hosts.neu /etc/hosts
     echo "harbour-whatsapp: $NAME aus /etc/hosts entfernt"
 fi
+if [ -x /sbin/initctl ]; then
+    /sbin/initctl stop apps/harbour-whatsapp \
+        >/dev/null 2>&1 || true
+fi
+
 exit 0

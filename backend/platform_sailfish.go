@@ -41,3 +41,10 @@ func sipAnruf(name, nummer string, beiAuflegen func()) (meowcallerQuelle, meowca
 
 func sipAuflegen() {}
 func sipStarten()  {}
+
+// Auf Sailfish uebernimmt der connman-Waechter in main.go; hier ist nichts
+// zusaetzlich zu tun.
+func watchNetworkPlatform() {}
+
+// Auf Sailfish startet systemd den Dienst; ein D-Bus-Name ist nicht noetig.
+func sitzungsNamenBeanspruchen() {}

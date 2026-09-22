@@ -18,7 +18,7 @@ Page {
         }
     }
 
-    Rectangle { anchors.fill: parent; color: "#0a0a0a" }
+    Rectangle { anchors.fill: parent; color: "#000000" }
 
     Column {
         anchors.centerIn: parent
