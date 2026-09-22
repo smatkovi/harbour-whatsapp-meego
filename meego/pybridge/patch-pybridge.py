@@ -31,7 +31,12 @@ MARKE = "'whatsapp': {"
 
 # --- Verbindungsmanager ----------------------------------------------------
 
+ALT_ZUSTELLUNG = '        ch = self._get_or_create_channel(chat_handle)\n        log("DELIVERING to ch=%s h=%s" % (ch._path, sender_handle))\n        ch.receive_message(sender_handle, text, timestamp)'
+
+NEU_ZUSTELLUNG = '        ch = self._get_or_create_channel(chat_handle)\n        log("DELIVERING to ch=%s h=%s" % (ch._path, sender_handle))\n        ch.receive_message(sender_handle, text, timestamp)\n        # Auf einem BESTEHENDEN Kanal erfaehrt CommHistory von einer neuen\n        # Nachricht nur, solange es ihn noch beobachtet. Schliesst man die\n        # Unterhaltung in der Nachrichten-App, hoert das auf -- und danach\n        # stapeln sich die Nachrichten unsichtbar als "pending". Im Feld\n        # sah man dann "pending_before=1" und in der Nachrichten-App\n        # nichts, waehrend die App des Dienstes die Nachricht zeigte.\n        #\n        # Gemeldet wird nur beobachtend (observe_only): die Unterhaltung\n        # soll im Verlauf auftauchen, sich aber nicht von selbst oeffnen.\n        # Hoechstens alle fuenf Sekunden -- jede Meldung startet einen\n        # eigenen Python-Prozess, und der kostet auf diesem Geraet.\n        _jetzt = time.time()\n        if _jetzt - getattr(ch, "_zuletzt_gemeldet", 0) > 5:\n            ch._zuletzt_gemeldet = _jetzt\n            gobject.idle_add(\n                lambda p=ch._path, c=ch: self._dispatch_channel(p, c, True) or False)'
+
 ERSETZUNGEN = [
+
     # 1) Der Dienst selbst.
     ("""    'matrix': {
         'daemon_script': '/opt/pymatrix/matrix_daemon.py',
@@ -134,6 +139,27 @@ Icon=icon-m-service-whatsapp
 """
 
 
+
+def zustellung_ergaenzen(text):
+    """Meldet einen bestehenden Kanal erneut, wenn eine Nachricht kommt.
+
+    Diese Ergaenzung gilt fuer ALLE Protokolle -- Telegram, WhatsApp und
+    Signal teilen sich die Stelle. Sie wird deshalb auch dann angewandt,
+    wenn das eigene Protokoll schon eingetragen ist; sonst kaeme sie nie
+    zur Anwendung, weil das Skript vorher abbricht.
+
+    Gibt (Text, ob geaendert) zurueck.
+    """
+    if "_zuletzt_gemeldet" in text:
+        return text, False
+    if text.count(ALT_ZUSTELLUNG) != 1:
+        sys.stderr.write(
+            "pybridge: Zustellstelle nicht eindeutig gefunden - "
+            "bleibt unveraendert\n")
+        return text, False
+    return text.replace(ALT_ZUSTELLUNG, NEU_ZUSTELLUNG, 1), True
+
+
 def lies(pfad):
     f = io.open(pfad, encoding='utf-8')
     try:
@@ -165,6 +191,15 @@ def patche_cm():
         sys.stderr.write('pybridge nicht gefunden: %s\n' % CM)
         return False
     text = lies(CM)
+
+    # Zuerst die Ergaenzung, die allen Protokollen gilt. Sie muss auch
+    # laufen, wenn das eigene Protokoll schon eingetragen ist.
+    text, zustellung = zustellung_ergaenzen(text)
+    if zustellung:
+        sichern(CM)
+        schreib(CM, text)
+        print('pybridge: Kanaele werden bei neuen Nachrichten erneut gemeldet')
+
     if MARKE in text:
         print('pybridge: WhatsApp bereits eingetragen')
         return True

@@ -60,3 +60,6 @@ func policyMutesStreams() bool { return true }
 // Auf Sailfish regelt das die Richtlinienschicht selbst.
 func musikPausieren()  {}
 func musikFortsetzen() {}
+
+// Auf Sailfish gibt es keine SIP-Bruecke.
+func sipKontoAnstossen() {}

@@ -729,6 +729,14 @@ func onIncomingCall(call *meowcaller.Call) {
 		s.mu.Lock()
 		s.usesSip = true
 		s.mu.Unlock()
+	} else {
+		// Ohne diese Zeile war im Feld nicht zu sehen, WARUM es nicht
+		// klingelte: der Anruf stand im Protokoll, die Bruecke lief, und
+		// dazwischen herrschte Schweigen. Der haeufige Grund ist, dass
+		// sich sofiasip nach einem Neustart des Dienstes noch nicht
+		// wieder angemeldet hat.
+		fmt.Println("📞 SIP: kein registriertes Telefon - es klingelt nicht")
+		sipKontoAnstossen()
 	}
 	// Always ring ourselves. The plugin acknowledging a call only proves it
 	// registered a handler with the call engine - the field log shows

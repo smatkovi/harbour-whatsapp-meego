@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 
@@ -115,7 +117,27 @@ func sipAuflegen() {
 	}
 }
 
-func sipStarten() { sipBrueckeStarten() }
+func sipStarten() {
+	sipBrueckeStarten()
+	// Nach dem Start der Bruecke nachsehen, ob sich ein Telefon anmeldet.
+	// Tut es das nicht, klingelt kein eingehender Anruf -- und das faellt
+	// erst auf, wenn einer verpasst wurde. Der Anstoss kostet nichts,
+	// wenn ohnehin alles steht.
+	go func() {
+		time.Sleep(20 * time.Second)
+		if bruecke == nil {
+			return
+		}
+		bruecke.mu.Lock()
+		bereit := bruecke.registriert
+		bruecke.mu.Unlock()
+		if bereit {
+			return
+		}
+		fmt.Println("📞 SIP: nach 20 s kein Telefon angemeldet")
+		sipKontoAnstossen()
+	}()
+}
 
 // policyMutesStreams sagt, ob eine Richtlinienschicht frisch angelegte
 // Stroeme stummschaltet und deshalb periodisch zurueckgesetzt werden muss.
@@ -206,4 +228,53 @@ func musikFortsetzen() {
 		return
 	}
 	fmt.Println("🎵 Musikwiedergabe fortgesetzt")
+}
+
+// sipKontoAnstossen bittet Mission Control, das SIP-Konto neu anzumelden.
+//
+// Die Bruecke verliert bei jedem Neustart des Dienstes ihren registrierten
+// Kontakt; sofiasip merkt das nicht und meldet sich erst zur naechsten
+// Erneuerung wieder an. Bis dahin klingelt kein eingehender Anruf -- genau
+// das war im Feld zu sehen, nachdem ein Upgrade den Dienst neu gestartet
+// hatte.
+//
+// Der Anstoss ist ein Umweg ueber die gewuenschte Anwesenheit: erst
+// offline, dann verfuegbar. Das laesst Mission Control die Verbindung neu
+// aufbauen, und damit kommt ein frisches REGISTER.
+func sipKontoAnstossen() {
+	conn, err := dbus.SessionBus()
+	if err != nil {
+		return
+	}
+	verwalter := conn.Object("org.freedesktop.Telepathy.AccountManager",
+		dbus.ObjectPath("/org/freedesktop/Telepathy/AccountManager"))
+	var konten dbus.Variant
+	if err := verwalter.Call("org.freedesktop.DBus.Properties.Get", 0,
+		"org.freedesktop.Telepathy.AccountManager", "ValidAccounts").Store(&konten); err != nil {
+		return
+	}
+	pfade, ok := konten.Value().([]dbus.ObjectPath)
+	if !ok {
+		return
+	}
+	for _, p := range pfade {
+		if !strings.Contains(string(p), "sofiasip/sip/whatsapp") {
+			continue
+		}
+		konto := conn.Object("org.freedesktop.Telepathy.AccountManager", p)
+		setzen := func(art uint32, name string) {
+			_ = konto.Call("org.freedesktop.DBus.Properties.Set", 0,
+				"org.freedesktop.Telepathy.Account", "RequestedPresence",
+				dbus.MakeVariant(struct {
+					Art     uint32
+					Name    string
+					Meldung string
+				}{art, name, ""})).Err
+		}
+		fmt.Println("📞 SIP: stosse Konto zur Neuanmeldung an")
+		setzen(1, "offline")
+		time.Sleep(2 * time.Second)
+		setzen(2, "available")
+		return
+	}
 }
