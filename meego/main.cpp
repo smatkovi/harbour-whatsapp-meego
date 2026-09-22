@@ -11,6 +11,8 @@
 #include <QDeclarativeView>
 #include <QDir>
 #include <QFile>
+#include <QInputContext>
+#include <QInputContextFactory>
 #include <QFileInfo>
 
 #include "src/Backend.h"
@@ -51,6 +53,17 @@ int main(int argc, char *argv[])
 {
     sitzungsBusSetzen();
     QApplication app(argc, argv);
+
+    // Ohne das bleibt die virtuelle Tastatur weg, sobald die ausziehbare
+    // eingeklappt ist: Qt waehlt dann gar keinen Eingabekontext, und ein
+    // TextField bekommt zwar den Fokus, aber nichts erscheint. Harmattans
+    // Tastatur haengt an MInputContext, und die Standardapps setzen ihn
+    // ueber ihre Bibliotheken -- eine nackte QApplication tut das nicht.
+    if (QInputContext *ic = QInputContextFactory::create(
+            QLatin1String("MInputContext"), &app)) {
+        app.setInputContext(ic);
+    }
+
     app.setApplicationName(QLatin1String("harbour-whatsapp"));
     app.setOrganizationName(QLatin1String("harbour-whatsapp"));
 
