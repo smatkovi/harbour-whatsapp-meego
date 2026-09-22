@@ -223,6 +223,13 @@ func sipBrueckeStarten() {
 	b.srv.OnBye(b.beiBye)
 	b.srv.OnCancel(b.beiBye)
 	b.srv.OnAck(func(req *sip.Request, tx sip.ServerTransaction) {})
+	// sofiasip schickt OPTIONS als Lebenszeichen an den Registrar. Bleibt
+	// das unbeantwortet, haelt es die Bruecke irgendwann fuer tot und wirft
+	// die Registrierung weg -- dann klingelt nichts mehr, ohne dass man
+	// merkt warum.
+	b.srv.OnOptions(func(req *sip.Request, tx sip.ServerTransaction) {
+		_ = tx.Respond(sip.NewResponseFromRequest(req, 200, "OK", nil))
+	})
 
 	adr := net.JoinHostPort(sipHost, strconv.Itoa(sipPort))
 	go func() {
