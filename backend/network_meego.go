@@ -15,6 +15,7 @@ package main
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 )
@@ -49,6 +50,12 @@ func watchNetworkPlatform() {
 	conn.Signal(ch)
 	fmt.Println("📶 icd2-Waechter aktiv")
 
+	// Der zuletzt gesehene Zustand. Er entscheidet, ob ein "verbunden"
+	// eine Bestaetigung ist oder ein Wechsel -- und nur beim Wechsel muss
+	// etwas geschehen.
+	vorher := -1
+	var letzterAbriss time.Time
+
 	for sig := range ch {
 		if sig.Name != "com.nokia.icd2.state_sig" {
 			continue
@@ -69,13 +76,39 @@ func watchNetworkPlatform() {
 		switch zustand {
 		case icdConnected:
 			netState = "online"
-			if client != nil && !client.IsConnected() {
+			if client == nil {
+				break
+			}
+			if !client.IsConnected() {
 				nudgeConnect("icd2: Netz wieder da")
+				break
+			}
+			// Hier lag der Fehler: steht die alte Verbindung scheinbar
+			// noch, geschah nichts. Nach einem Wechsel von WLAN auf GPRS
+			// ist das aber der Normalfall -- die Gegenstelle ist weg, doch
+			// der Rechner merkt es nicht, weil TCP von sich aus nichts
+			// sagt. Bis der Keepalive zweimal ausfiel und der periodische
+			// Waechter zugriff, vergingen Minuten; im Feldprotokoll stand
+			// dann "connecting (watchdog)" statt eines icd2-Anstosses.
+			//
+			// Ein Wechsel von "nicht verbunden" nach "verbunden" heisst,
+			// dass sich der Weg ins Netz geaendert hat. Dann wird aktiv
+			// abgerissen statt nachgefragt.
+			if vorher != -1 && vorher != icdConnected &&
+				time.Since(letzterAbriss) > 20*time.Second {
+				letzterAbriss = time.Now()
+				fmt.Println("📶 icd2: anderer Weg ins Netz - Verbindung wird erneuert")
+				go func() {
+					client.Disconnect()
+					time.Sleep(500 * time.Millisecond)
+					nudgeConnect("icd2: Netzwechsel")
+				}()
 			}
 		case icdDisconnected:
 			netState = "idle"
 		case icdConnecting:
 			// Nichts tun: erst wenn die Verbindung steht, lohnt ein Versuch.
 		}
+		vorher = zustand
 	}
 }
