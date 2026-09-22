@@ -47,6 +47,28 @@ mkdir -p "$STAGE/usr/share/dbus-1/services" "$STAGE/etc/init/apps"
 cp meego/org.smatkovi.WhatsApp.service "$STAGE/usr/share/dbus-1/services/"
 cp meego/harbour-whatsapp-trigger.conf "$STAGE/etc/init/apps/harbour-whatsapp.conf"
 
+# --- Nachrichten-App: der pybridge-Anschluss --------------------------------
+# pybridge ist der Telepathy-Verbindungsmanager, der auf diesem Geraet schon
+# Telegram und Matrix in die Nachrichten-App traegt. WhatsApp haengt sich
+# daran: ein Daemon, der auf der einen Seite pybridges Zeilen-JSON spricht
+# und auf der anderen unsere HTTP-Schnittstelle. Der Manager selbst gehoert
+# einem fremden Paket und wird nur an neun Stellen erweitert -- durch ein
+# pruefendes Skript, das sich nach einem pybridge-Update erneut anwenden
+# laesst.
+mkdir -p "$STAGE/opt/pywhatsapp" \
+         "$STAGE/usr/share/accounts/services" \
+         "$STAGE/usr/share/accounts/providers" \
+         "$STAGE/usr/share/themes/blanco/meegotouch/icons"
+cp meego/pybridge/whatsapp_daemon.py "$STAGE/opt/pywhatsapp/"
+cp meego/pybridge/patch-pybridge.py  "$STAGE/opt/pywhatsapp/"
+cp meego/pybridge/whatsapp-setup     "$STAGE/opt/pywhatsapp/"
+chmod 755 "$STAGE/opt/pywhatsapp/"*.py "$STAGE/opt/pywhatsapp/whatsapp-setup"
+cp meego/pybridge/whatsapp.service  "$STAGE/usr/share/accounts/services/"
+cp meego/pybridge/whatsapp.provider "$STAGE/usr/share/accounts/providers/"
+cp meego/pybridge/icon-m-service-whatsapp.png \
+   meego/pybridge/icon-s-service-whatsapp.png \
+   "$STAGE/usr/share/themes/blanco/meegotouch/icons/"
+
 cp meego/postinst meego/prerm "$STAGE/DEBIAN/"
 chmod 755 "$STAGE/DEBIAN/postinst" "$STAGE/DEBIAN/prerm"
 

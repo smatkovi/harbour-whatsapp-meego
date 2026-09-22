@@ -12,6 +12,14 @@ Page {
             onClicked: { Dienst.chatSchliessen(); pageStack.pop() }
         }
         ToolIcon {
+            // Umgekehrt nur bei Gruppen: die Mitgliederliste, und darueber
+            // der Weg in den Einzelchat mit jemandem daraus.
+            platformIconId: "toolbar-contact"
+            visible: seite.jid.length > 15
+            onClicked: pageStack.push(Qt.resolvedUrl("GroupMembersPage.qml"),
+                                      { titel: seite.titel, jid: seite.jid })
+        }
+        ToolIcon {
             // Nur bei Einzelchats: eine Gruppe anzurufen unterstuetzt das
             // Backend nicht, und ein Knopf, der nichts tut, ist schlimmer
             // als keiner.
@@ -47,8 +55,46 @@ Page {
         spacing: 6
         // Der Verlauf kommt in zeitlicher Reihenfolge; die neueste Nachricht
         // gehoert unten und sichtbar.
-        onCountChanged: positionViewAtEnd()
+        //
+        // Aber nur, wenn man auch unten steht: seit sich aeltere Nachrichten
+        // nachladen lassen, waere ein bedingungsloses Springen laestig --
+        // man blaettert hinauf, laedt nach, und die Ansicht reisst einen
+        // wieder ganz nach unten, weg von dem, was gerade hereinkam.
+        onCountChanged: if (atYEnd || count <= 1) positionViewAtEnd()
         Component.onCompleted: positionViewAtEnd()
+
+        // Ganz oben: der Weg zu dem, was das Telefon noch hat. Der lokale
+        // Speicher reicht nur so weit zurueck, wie WhatsApp beim Verknuepfen
+        // mitgeschickt hat.
+        header: Item {
+            width: verlauf.width
+            height: kopf.height + 12
+
+            Column {
+                id: kopf
+                width: parent.width
+                spacing: 6
+
+                Button {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    width: parent.width * 0.7
+                    text: Dienst.laedtAeltere ? "wird angefragt \u2026"
+                                              : "\u00c4ltere Nachrichten laden"
+                    enabled: !Dienst.laedtAeltere
+                    onClicked: Dienst.aeltereLaden()
+                }
+
+                Label {
+                    width: parent.width
+                    visible: Dienst.aeltereHinweis !== ""
+                    text: Dienst.aeltereHinweis
+                    wrapMode: Text.WordWrap
+                    horizontalAlignment: Text.AlignHCenter
+                    color: "#909090"
+                    font.pixelSize: 18
+                }
+            }
+        }
 
         // Breiteste zulaessige Blase. Einmal hier statt in jedem Eintrag.
         property real maxBlase: width * 0.82

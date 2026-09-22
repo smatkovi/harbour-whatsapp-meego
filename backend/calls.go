@@ -291,6 +291,10 @@ func (s *callSession) startAudio() {
 		return
 	}
 	s.mu.Unlock()
+	// Musik erst aus dem Weg raeumen. Auf einem Geraet, dessen
+	// Richtlinienschicht uns nicht als Anruf kennt, laeuft sie sonst
+	// waehrend des Gespraechs weiter.
+	musikPausieren()
 	// Erst der Weg ueber SIP: dann klingelt es in der Anrufansicht des
 	// Geraets, auch am Sperrbildschirm, und Annehmen/Ablehnen macht die
 	// systemeigene Oberflaeche. Gibt es keine Bruecke oder kein
@@ -358,6 +362,7 @@ func (s *callSession) finish(reason string) {
 	audio := s.audio
 	s.audio = nil
 	s.mu.Unlock()
+	musikFortsetzen()
 	if audio != nil {
 		audio.Close()
 	}

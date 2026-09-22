@@ -1,7 +1,23 @@
 #!/bin/sh
-# Nimmt den Eintrag wieder heraus -- aber nur unseren, und nur wenn ihn
-# niemand sonst benutzt.
+# Vor dem Entfernen: Konten loeschen, Dienste beenden, Namen austragen.
 set -e
+
+# Die Konten zuerst -- danach ist mc-tool vielleicht schon ohne Gegenstelle.
+if [ -x /opt/pywhatsapp/whatsapp-setup ]; then
+    if [ -x /sbin/start-stop-daemon ]; then
+        /sbin/start-stop-daemon --start --chuid user \
+            --exec /opt/pywhatsapp/whatsapp-setup -- remove || true
+    else
+        /opt/pywhatsapp/whatsapp-setup remove || true
+    fi
+fi
+
+# Backend sauber beenden (siehe postinst: der Job kann das nicht).
+for p in 8085 8086 8087 8088 8089; do
+    curl -s -m 5 "http://127.0.0.1:$p/quit" >/dev/null 2>&1 || true
+done
+pkill -f whatsapp_daemon.py >/dev/null 2>&1 || true
+
 NAME=whatsapp.local
 if [ -f /etc/hosts ] && grep -q "^127\.0\.0\.1[[:space:]]\+$NAME[[:space:]]*$" /etc/hosts; then
     # Zeilenweise filtern statt sed -i: /etc/hosts ist zu wichtig, um es
@@ -11,8 +27,7 @@ if [ -f /etc/hosts ] && grep -q "^127\.0\.0\.1[[:space:]]\+$NAME[[:space:]]*$" /
     echo "harbour-whatsapp: $NAME aus /etc/hosts entfernt"
 fi
 if [ -x /sbin/initctl ]; then
-    /sbin/initctl stop apps/harbour-whatsapp \
-        >/dev/null 2>&1 || true
+    /sbin/initctl stop apps/harbour-whatsapp >/dev/null 2>&1 || true
 fi
 
 exit 0

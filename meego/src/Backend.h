@@ -43,6 +43,10 @@ class Backend : public QObject
     Q_PROPERTY(bool anrufAusgehend READ anrufAusgehend NOTIFY anrufChanged)
     Q_PROPERTY(int anrufSekunden READ anrufSekunden NOTIFY anrufChanged)
     Q_PROPERTY(bool anrufStumm READ anrufStumm NOTIFY anrufChanged)
+    Q_PROPERTY(bool laedtAeltere READ laedtAeltere NOTIFY aeltereChanged)
+    Q_PROPERTY(QString aeltereHinweis READ aeltereHinweis NOTIFY aeltereChanged)
+    Q_PROPERTY(QVariantList mitglieder READ mitglieder NOTIFY gruppeChanged)
+    Q_PROPERTY(bool laedtGruppe READ laedtGruppe NOTIFY gruppeChanged)
 
 public:
     explicit Backend(const QString &binary, QObject *parent = 0);
@@ -63,6 +67,10 @@ public:
     bool anrufAusgehend() const { return m_anrufAus; }
     int anrufSekunden() const { return m_anrufSek; }
     bool anrufStumm() const { return m_anrufStumm; }
+    bool laedtAeltere() const { return m_laedtAeltere; }
+    QString aeltereHinweis() const { return m_aeltereHinweis; }
+    QVariantList mitglieder() const { return m_mitglieder; }
+    bool laedtGruppe() const { return m_laedtGruppe; }
 
     // Startet den Dienst, falls er nicht schon laeuft, und beginnt abzufragen.
     Q_INVOKABLE void starten();
@@ -71,6 +79,17 @@ public:
     Q_INVOKABLE void chatSchliessen();
     Q_INVOKABLE void senden(const QString &jid, const QString &text);
     Q_INVOKABLE void neuLaden();
+    // Fordert aeltere Nachrichten des offenen Chats beim Telefon an.
+    // Der lokale Speicher reicht nur so weit zurueck, wie WhatsApp beim
+    // Verknuepfen mitgeschickt hat; alles davor liegt auf dem Haupttelefon
+    // und muss einzeln angefordert werden. Die Antwort auf diese Anfrage
+    // sagt nur, dass sie abgeschickt ist -- die Nachrichten treffen
+    // Sekunden spaeter ein und kommen ueber /events herein.
+    Q_INVOKABLE void aeltereLaden();
+    // Holt die Mitglieder einer Gruppe. Das Backend hat sie ohnehin im
+    // Zwischenspeicher -- bei 137 Leuten will man sie aber nicht bei jedem
+    // Oeffnen des Chats mitladen, deshalb auf Abruf.
+    Q_INVOKABLE void gruppeLaden(const QString &jid);
     Q_INVOKABLE QString zeit(const QVariant &wert) const;
     // Holt den Anhang einer Nachricht aufs Geraet. Bilder und Dokumente
     // liegen erst nach dem Abruf lokal -- auf 2G will man das nicht
@@ -104,6 +123,8 @@ signals:
     void anrufChanged();
     void tonBereit(const QString &pfad);
     void tonFehler(const QString &text);
+    void aeltereChanged();
+    void gruppeChanged();
 
 private slots:
     void statusFertig();
@@ -114,6 +135,8 @@ private slots:
     void anrufZustandFertig();
     void anrufBefehlFertig();
     void abmeldenFertig();
+    void aeltereFertig();
+    void gruppeFertig();
     void umwandlungFertig(int code);
     void tonUmgewandelt(int code);
     void anhangFertig();
@@ -162,6 +185,12 @@ private:
     bool m_anrufAus;
     int m_anrufSek;
     bool m_anrufStumm;
+
+    bool m_laedtAeltere;
+    QString m_aeltereHinweis;
+
+    QVariantList m_mitglieder;
+    bool m_laedtGruppe;
 };
 
 #endif

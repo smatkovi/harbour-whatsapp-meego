@@ -21,6 +21,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/godbus/dbus/v5"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -98,3 +100,94 @@ func sipAuflegen() {
 }
 
 func sipStarten() { sipBrueckeStarten() }
+
+// policyMutesStreams sagt, ob eine Richtlinienschicht frisch angelegte
+// Stroeme stummschaltet und deshalb periodisch zurueckgesetzt werden muss.
+//
+// Auf Harmattan nicht: hier gibt es keinen solchen Waechter -- und das
+// Gegenmittel war schlimmer als die Krankheit. PulseAudio ist auf diesem
+// Geraet 0.9.19, und SET_SOURCE_OUTPUT_MUTE kam erst Jahre spaeter dazu.
+// Der Server findet das Kommando nicht in seiner Tabelle, wertet das als
+// Protokollverstoss und wirft die Verbindung weg -- mitten im Anruf.
+//
+// Im Protokoll sah das so aus: keepUnmuted feuert nach 500 ms, der
+// Mikrofonzaehler blieb bei 10240 Samples (0,64 s) stehen, und ab 700 ms
+// beantwortete PulseAudio jede Latenzabfrage mit EOF. Beide Stroeme
+// standen danach auf serverLost, also rec=false play=false: das Gegenueber
+// war zu hoeren gewesen -- die RTP-Pakete kamen an und wurden dekodiert --,
+// aber nichts davon erreichte je den Lautsprecher, und das Mikrofon lieferte
+// nichts mehr.
+func policyMutesStreams() bool { return false }
+
+// --- Musikwiedergabe waehrend eines Anrufs -------------------------------
+//
+// Harmattan hat dafuer einen Richtliniendienst (org.maemo.resource.manager),
+// der einer Anwendung mit Anruf-Klasse die Tonausgabe zuteilt und die Musik
+// dabei anhaelt. Da hineinzukommen hiesse, sich als Anruf-Anwendung
+// anzumelden -- und derselbe Weg ueber com.nokia.mce, den wir dafuer
+// brauchten, wird uns vom Bus verweigert ("Rejected send message ...
+// req_call_state_change"). Aegis vergibt diese Rechte nur an signierte
+// Pakete.
+//
+// Was bleibt, ist der direkte Weg: MAFW ist der Wiedergabedienst hinter der
+// Musik-App, und er nimmt Befehle von jedem auf dem Sitzungsbus entgegen.
+// get_status liefert den Zustand als viertes Feld -- 1 heisst "spielt".
+const (
+	mafwDienst = "com.nokia.mafw.renderer.MafwGstRendererPlugin.mafw_gst_renderer"
+	mafwPfad   = "/com/nokia/mafw/renderer/mafw_gst_renderer"
+	mafwIface  = "com.nokia.mafw.renderer"
+	mafwSpielt = int32(1)
+)
+
+// Nur fortsetzen, wenn wir es waren, die angehalten haben -- sonst faengt
+// nach dem Auflegen Musik an, die vorher gar nicht lief.
+var musikVonUnsPausiert bool
+
+func mafwObjekt() (*dbus.Conn, dbus.BusObject) {
+	conn, err := dbus.SessionBus()
+	if err != nil {
+		return nil, nil
+	}
+	return conn, conn.Object(mafwDienst, dbus.ObjectPath(mafwPfad))
+}
+
+func musikPausieren() {
+	_, obj := mafwObjekt()
+	if obj == nil {
+		return
+	}
+	var playlist string
+	var index uint32
+	var zustand int32
+	var objektId string
+	if err := obj.Call(mafwIface+".get_status", 0).Store(
+		&playlist, &index, &zustand, &objektId); err != nil {
+		// Laeuft die Musik-App gar nicht, gibt es auch nichts anzuhalten.
+		return
+	}
+	if zustand != mafwSpielt {
+		return
+	}
+	if err := obj.Call(mafwIface+".pause", 0).Err; err != nil {
+		fmt.Printf("🎵 Musik nicht anzuhalten: %v\n", err)
+		return
+	}
+	musikVonUnsPausiert = true
+	fmt.Println("🎵 Musikwiedergabe fuer den Anruf angehalten")
+}
+
+func musikFortsetzen() {
+	if !musikVonUnsPausiert {
+		return
+	}
+	musikVonUnsPausiert = false
+	_, obj := mafwObjekt()
+	if obj == nil {
+		return
+	}
+	if err := obj.Call(mafwIface+".resume", 0).Err; err != nil {
+		fmt.Printf("🎵 Musik nicht fortzusetzen: %v\n", err)
+		return
+	}
+	fmt.Println("🎵 Musikwiedergabe fortgesetzt")
+}

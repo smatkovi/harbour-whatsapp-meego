@@ -48,3 +48,11 @@ func watchNetworkPlatform() {}
 
 // Auf Sailfish startet systemd den Dienst; ein D-Bus-Name ist nicht noetig.
 func sitzungsNamenBeanspruchen() {}
+
+// policyMutesStreams: auf Sailfish ja -- die Richtlinienschicht legt
+// gewoehnliche Stroeme im Anrufmodus stumm. Siehe keepUnmuted.
+func policyMutesStreams() bool { return true }
+
+// Auf Sailfish regelt das die Richtlinienschicht selbst.
+func musikPausieren()  {}
+func musikFortsetzen() {}

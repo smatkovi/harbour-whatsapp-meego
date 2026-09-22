@@ -346,7 +346,11 @@ func openCallAudio(managed bool) (*callAudio, error) {
 		a.sinkName, a.earpiecePort, a.speakerPort, a.restorePort, a.routeType, managed)
 	go a.logLevels()
 	go a.trackLatency()
-	go a.keepUnmuted()
+	// Nur dort, wo eine Richtlinienschicht dazwischenfunkt. Auf
+	// Harmattan riss dieser Behelf die PulseAudio-Verbindung ab.
+	if policyMutesStreams() {
+		go a.keepUnmuted()
+	}
 	return a, nil
 }
 
@@ -456,6 +460,14 @@ func (a *callAudio) logLevels() {
 		a.mu.Unlock()
 		fmt.Printf("📞 audio: mic %d samples level %.3f | peer %d samples level %.3f | muted=%v rec=%v play=%v | aec delay %s ref %d bypassed %d\n",
 			mic, ml, spk, sl, a.muted, a.rec.Running(), a.play.Running(), lat.Round(time.Millisecond), refq, byp)
+		// Ein stehender Strom sagt allein nicht, warum er steht: ein
+		// Lese-/Schreibfehler sieht genauso aus wie eine weggebrochene
+		// Verbindung. Beides nur melden, wenn es etwas zu melden gibt.
+		if re, pe := a.rec.Error(), a.play.Error(); re != nil || pe != nil ||
+			a.rec.Closed() || a.play.Closed() {
+			fmt.Printf("📞 audio-stroeme: rec err=%v closed=%v | play err=%v closed=%v\n",
+				re, a.rec.Closed(), pe, a.play.Closed())
+		}
 		fmt.Printf("📞 aec: reference %d/%d samples, trimmed %d\n", refq, want, trimmed)
 	}
 }
@@ -531,11 +543,18 @@ func peakOf(buf []float32) float32 {
 // droid name first, then any source whose name is not a monitor, and the
 // default only as a last resort.
 func (a *callAudio) pickMicrophone() *pulse.Source {
-	// source.primary_input ist der Droid-Name auf Sailfish, source.record
-	// der von Harmattan. Beide direkt zu probieren ist billiger als die
-	// Liste zu durchsuchen -- und zuverlaessiger, weil die Reihenfolge der
-	// Liste nichts verspricht.
-	for _, name := range []string{"source.primary_input", "source.record"} {
+	// source.primary_input ist der Droid-Name auf Sailfish. Auf Harmattan
+	// ist source.hw0 das echte Mikrofon -- seine Ports heissen
+	// nokia-dfl61-twl4030-input-internal-microphones und -input-headset.
+	//
+	// source.record steht dort zwar auch zur Verfuegung, ist aber nur eine
+	// virtuelle Quelle, die die Richtlinienschicht umverdrahtet. Im
+	// Feldtest hing sie an source.voice.raw, dem Sprachpfad des
+	// Mobilfunkteils: der ist ohne echten GSM-Anruf still, und genau das
+	// stand im Protokoll -- 77120 aufgenommene Samples mit Pegel 0.000,
+	// waehrend die Gegenseite gut zu hoeren war. Sie bleibt als Rueckfall
+	// hinten, falls ein Geraet kein source.hw0 hat.
+	for _, name := range []string{"source.primary_input", "source.hw0", "source.record"} {
 		if src, err := a.pc.SourceByID(name); err == nil && src != nil {
 			return src
 		}
@@ -580,7 +599,18 @@ func (a *callAudio) discoverSink() {
 		for _, p := range s.Ports {
 			name := strings.ToLower(p.Name)
 			desc := strings.ToLower(p.Description)
-			if speaker == "" && (strings.Contains(name, "speaker") || strings.Contains(desc, "speaker")) {
+			// "ihf" ist Nokias Name fuer den Lautsprecher (Integrated
+			// Hands-Free): nokia-dfl61-twl4030-output-ihf. Ohne diesen
+			// Namen fand die Suche auf dem N950 nie eine Senke mit
+			// Lautsprecher UND Hoermuschel -- sie fiel durch bis zur
+			// Standardsenke, und damit blieben Hoermuschel-Wahl und der
+			// Lautsprecher-Knopf wirkungslos, obwohl sink.hw0 beide Ports
+			// anbietet.
+			if speaker == "" && (strings.Contains(name, "speaker") ||
+				strings.Contains(desc, "speaker") ||
+				strings.Contains(name, "ihf") ||
+				strings.Contains(name, "handsfree") ||
+				strings.Contains(desc, "hands-free")) {
 				speaker = p.Name
 			}
 			if earpiece == "" && (strings.Contains(name, "earpiece") || strings.Contains(name, "handset") ||
@@ -938,4 +968,88 @@ func (a *callAudio) defaultSourceByName() (*pulse.Source, error) {
 		return nil, nil
 	}
 	return a.pc.SourceByID(info.DefaultSourceName)
+}
+
+// audioDevices listet auf, was PulseAudio an Quellen und Senken anbietet.
+//
+// Der Anlass: auf dem N950 nimmt der Anruf von "source.record" auf, und die
+// Richtlinienschicht von Harmattan verdrahtet den gerade auf
+// "source.voice.raw" -- den Sprachpfad des Mobilfunkteils. Der ist ohne
+// echten GSM-Anruf still, und genau das stand im Protokoll: das Mikrofon
+// lieferte 77120 Samples mit Pegel 0.000. Um eine bessere Quelle waehlen zu
+// koennen, muss man erst einmal sehen, welche es gibt -- und auf diesem
+// Geraet gibt es weder pactl noch pacmd.
+func audioDevices() (map[string]interface{}, error) {
+	opts := []pulse.ClientOption{
+		pulse.ClientApplicationName("harbour-whatsapp"),
+		pulse.ClientTimeout(5 * time.Second),
+	}
+	if srv := pulseServerString(); srv != "" {
+		opts = append(opts, pulse.ClientServerString(srv))
+	}
+	pc, err := pulse.NewClient(opts...)
+	if err != nil {
+		return nil, err
+	}
+	defer pc.Close()
+
+	mittel := func(v proto.ChannelVolumes) int {
+		if len(v) == 0 {
+			return -1
+		}
+		var summe uint64
+		for _, x := range v {
+			summe += uint64(x)
+		}
+		return int(summe / uint64(len(v)) * 100 / 0x10000)
+	}
+
+	quellen := []map[string]interface{}{}
+	var liste proto.GetSourceInfoListReply
+	if err := pc.RawRequest(&proto.GetSourceInfoList{}, &liste); err == nil {
+		for _, s := range liste {
+			eintrag := map[string]interface{}{
+				"id":      s.SourceName,
+				"name":    s.Device,
+				"index":   s.SourceIndex,
+				"mute":    s.Mute,
+				"volume":  mittel(s.ChannelVolumes),
+				"monitor": s.MonitorSourceName,
+				"driver":  s.Driver,
+				"state":   s.State,
+			}
+			namen := []string{}
+			for _, p := range s.Ports {
+				namen = append(namen, p.Name)
+			}
+			eintrag["ports"] = namen
+			quellen = append(quellen, eintrag)
+		}
+	} else {
+		return nil, fmt.Errorf("Quellen nicht abfragbar: %w", err)
+	}
+
+	senken := []map[string]interface{}{}
+	var sliste proto.GetSinkInfoListReply
+	if err := pc.RawRequest(&proto.GetSinkInfoList{}, &sliste); err == nil {
+		for _, s := range sliste {
+			eintrag := map[string]interface{}{
+				"id":     s.SinkName,
+				"name":   s.Device,
+				"index":  s.SinkIndex,
+				"mute":   s.Mute,
+				"volume": mittel(s.ChannelVolumes),
+				"driver": s.Driver,
+				"state":  s.State,
+			}
+			namen := []string{}
+			for _, p := range s.Ports {
+				namen = append(namen, p.Name)
+			}
+			eintrag["ports"] = namen
+			senken = append(senken, eintrag)
+		}
+	}
+
+	return map[string]interface{}{"sources": quellen, "sinks": senken}, nil
 }

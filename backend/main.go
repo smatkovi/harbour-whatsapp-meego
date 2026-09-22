@@ -3107,6 +3107,20 @@ func main() {
 	// /status sofort registrieren, damit Launcher und UI den Zustand
 	// "starting" sehen, waehrend Secrets/DB noch initialisieren
 	registerCallHandlers()
+	// Welche Quellen und Senken PulseAudio hat. Auf dem Geraet gibt es
+	// weder pactl noch pacmd -- ohne das bleibt die Wahl des Mikrofons
+	// Raterei.
+	http.HandleFunc("/audio/devices", func(w http.ResponseWriter, r *http.Request) {
+		d, err := audioDevices()
+		w.Header().Set("Content-Type", "application/json")
+		if err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(d)
+	})
+
 	http.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		phone := ""

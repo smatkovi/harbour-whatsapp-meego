@@ -1,0 +1,158 @@
+#!/bin/sh
+# Legt die Konten an, die WhatsApp auf diesem Geraet braucht, und entfernt
+# sie wieder.
+#
+#   whatsapp-setup add      # bei der Installation
+#   whatsapp-setup remove   # bei der Deinstallation
+#
+# Drei Dinge, die man sich hier erarbeiten muss:
+#
+# 1) Zwei Konten, weil zwei Systeme beteiligt sind:
+#      pybridge/whatsapp -- traegt Nachrichten in die Nachrichten-App
+#      sofiasip/sip      -- laesst Anrufe im gewohnten Anruf-Bildschirm
+#                           klingeln, ueber die Bruecke auf 127.0.0.1
+#    Das SIP-Konto braucht eine Adresse, die wie eine Mailadresse aussieht:
+#    die Kontoverwaltung prueft das und nimmt weder einen nackten Namen noch
+#    eine IP. Daher whatsapp@whatsapp.local, das postinst zeigt den Namen
+#    ueber /etc/hosts auf die Loopback-Schnittstelle. Das Passwort ist
+#    beliebig -- die Bruecke nimmt jedes REGISTER an und lauscht nur lokal.
+#
+# 2) ZWEI Kontospeicher. mc-tool schreibt nach ~/.rtcom-accounts/accounts.cfg,
+#    die Kontoverwaltung der Oberflaeche liest aber libaccounts
+#    (~/.accounts/accounts.db). Ein nur mit mc-tool angelegtes Konto laeuft
+#    zwar, steht in der Oberflaeche aber ohne Namen da -- genau das war bei
+#    den vorhandenen Telegram- und Matrix-Konten zu sehen. Deshalb hier
+#    beides: mc-tool legt das Telepathy-Konto an, ag-tool den Eintrag in
+#    libaccounts, und "tmc-uid" verbindet die zwei. Ein Duplikat entsteht
+#    dabei nicht.
+#
+# 3) Mission Control liest die Protokolliste nur beim Start, und es fragt
+#    dazu den laufenden Verbindungsmanager. Nach dem Einpassen von WhatsApp
+#    muessen deshalb beide neu starten, sonst antwortet mc-tool mit
+#    "Protocol whatsapp not found". Das erledigt das postinst.
+#
+# mc-tool und ag-tool sprechen mit der Sitzung. Aus einem postinst heraus
+# laeuft dieses Skript als root und ohne Sitzungsbus -- beides wird hier
+# nachgeholt, sonst passiert schlicht nichts.
+set -e
+
+BEFEHL=${1:-add}
+
+if [ -z "$DBUS_SESSION_BUS_ADDRESS" ] && [ -f /tmp/session_bus_address.user ]; then
+    . /tmp/session_bus_address.user
+    export DBUS_SESSION_BUS_ADDRESS
+fi
+if [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then
+    echo "whatsapp-setup: kein Sitzungsbus - uebersprungen" >&2
+    exit 0
+fi
+
+DB=$HOME/.accounts/accounts.db
+
+konto_suchen() {
+    mc-tool list 2>/dev/null | grep "^$1" | head -n 1
+}
+
+# Letzte libaccounts-Kennung zu einem Anbieter, oder leer.
+ag_id() {
+    python -c "
+import sqlite3, sys
+try:
+    c = sqlite3.connect('$DB')
+    r = [x[0] for x in c.execute('select id from Accounts where provider=?', ('$1',))]
+    print r[-1] if r else ''
+except Exception:
+    print ''
+" 2>/dev/null
+}
+
+case "$BEFEHL" in
+add)
+    # --- Nachrichten: Telepathy-Konto ----------------------------------
+    KONTO=$(konto_suchen pybridge/whatsapp/)
+    if [ -n "$KONTO" ]; then
+        echo "whatsapp-setup: Nachrichtenkonto besteht schon ($KONTO)"
+    else
+        # Der Parameter "account" bestimmt den Pfad: WhatsApp ->
+        # pybridge/whatsapp/WhatsApp0. Darauf faellt der Verbindungsmanager
+        # zurueck, wenn die Abfrage beim Kontoverwalter scheitert -- die
+        # beiden muessen zusammenpassen.
+        mc-tool add pybridge/whatsapp WhatsApp string:account=WhatsApp >/dev/null 2>&1 || true
+        KONTO=$(konto_suchen pybridge/whatsapp/)
+    fi
+    if [ -n "$KONTO" ]; then
+        mc-tool display "$KONTO" WhatsApp            >/dev/null 2>&1 || true
+        mc-tool service "$KONTO" whatsapp            >/dev/null 2>&1 || true
+        mc-tool icon    "$KONTO" icon-m-service-whatsapp >/dev/null 2>&1 || true
+        mc-tool enable  "$KONTO"                     >/dev/null 2>&1 || true
+        mc-tool auto-connect "$KONTO" on             >/dev/null 2>&1 || true
+        echo "whatsapp-setup: Telepathy-Konto $KONTO bereit"
+    else
+        echo "whatsapp-setup: Telepathy-Konto konnte nicht angelegt werden" >&2
+    fi
+
+    # --- Nachrichten: Eintrag fuer die Kontoverwaltung ------------------
+    if [ -n "$(ag_id whatsapp)" ]; then
+        echo "whatsapp-setup: libaccounts-Eintrag besteht schon"
+    elif [ -n "$KONTO" ]; then
+        ag-tool create-account whatsapp WhatsApp enable >/dev/null 2>&1 || true
+        ID=$(ag_id whatsapp)
+        if [ -n "$ID" ]; then
+            ag-tool enable-service "$ID" whatsapp >/dev/null 2>&1 || true
+            ag-tool update-service "$ID" whatsapp string:tmc-uid="$KONTO" >/dev/null 2>&1 || true
+            ag-tool update-service "$ID" whatsapp string:ConnectAutomatically=true >/dev/null 2>&1 || true
+            echo "whatsapp-setup: libaccounts-Eintrag $ID -> $KONTO"
+        fi
+    fi
+
+    # --- Anrufe ---------------------------------------------------------
+    if [ -n "$(konto_suchen sofiasip/sip/whatsapp_40whatsapp)" ]; then
+        echo "whatsapp-setup: SIP-Konto besteht schon"
+    else
+        mc-tool add sofiasip/sip WhatsApp-Anrufe \
+            string:account=whatsapp@whatsapp.local \
+            string:auth-user=whatsapp \
+            string:password=whatsapp \
+            string:proxy-host=127.0.0.1 \
+            uint:port=5060 \
+            string:transport=udp \
+            bool:loose-routing=true \
+            string:keepalive-mechanism=options \
+            bool:discover-binding=false \
+            bool:discover-stun=false >/dev/null 2>&1 || true
+        SIP=$(konto_suchen sofiasip/sip/whatsapp_40whatsapp)
+        if [ -n "$SIP" ]; then
+            mc-tool display "$SIP" "WhatsApp-Anrufe" >/dev/null 2>&1 || true
+            mc-tool enable "$SIP"                    >/dev/null 2>&1 || true
+            mc-tool auto-connect "$SIP" on           >/dev/null 2>&1 || true
+            echo "whatsapp-setup: SIP-Konto $SIP angelegt"
+        else
+            echo "whatsapp-setup: SIP-Konto konnte nicht angelegt werden" >&2
+        fi
+    fi
+    ;;
+
+remove)
+    # Nur die eigenen. Ein SIP-Konto, das jemand anders angelegt hat,
+    # bleibt unangetastet -- deshalb der enge Namensvergleich.
+    for muster in pybridge/whatsapp/ sofiasip/sip/whatsapp_40whatsapp; do
+        KONTO=$(konto_suchen "$muster")
+        if [ -n "$KONTO" ]; then
+            mc-tool remove "$KONTO" >/dev/null 2>&1 || true
+            echo "whatsapp-setup: $KONTO entfernt"
+        fi
+    done
+    ID=$(ag_id whatsapp)
+    if [ -n "$ID" ]; then
+        ag-tool delete-account "$ID" >/dev/null 2>&1 || true
+        echo "whatsapp-setup: libaccounts-Eintrag $ID entfernt"
+    fi
+    pkill -f whatsapp_daemon.py >/dev/null 2>&1 || true
+    ;;
+
+*)
+    echo "Gebrauch: $0 [add|remove]" >&2
+    exit 1
+    ;;
+esac
+exit 0

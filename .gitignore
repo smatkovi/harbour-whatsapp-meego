@@ -5,3 +5,5 @@ backend/wa-backend*
 *.rpm
 backend/go.sum
 backend/go.replace.local
+build/
+*.deb

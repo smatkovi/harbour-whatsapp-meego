@@ -47,6 +47,8 @@ Backend::Backend(const QString &binary, QObject *parent)
     , m_anrufAus(false)
     , m_anrufSek(0)
     , m_anrufStumm(false)
+    , m_laedtAeltere(false)
+    , m_laedtGruppe(false)
 {
     m_zustand = QLatin1String("starting");
     // Der Takt ist nur das Sicherheitsnetz; die eigentliche Aktualisierung
@@ -115,8 +117,46 @@ void Backend::setzeFehler(const QString &text)
     emit fehlerChanged();
 }
 
+// kontenEinrichten legt die beiden Konten an, die WhatsApp hier braucht --
+// eines fuer die Nachrichten-App (pybridge), eines fuer Anrufe (SIP).
+//
+// Warum aus der App und nicht aus dem postinst, wo es hingehoerte: dort
+// laeuft alles als root, und mc-tool wie ag-tool schreiben in die
+// Kontoverzeichnisse der Sitzung. Die Kennung zu wechseln verweigert Aegis
+// gleich zweifach -- "su: can't set groups: Operation not permitted" und
+// "start-stop-daemon: unable to set gid to 29999". Die App dagegen laeuft
+// ohnehin als "user" und hat den Sitzungsbus; hier gelingt es.
+//
+// Die Marke haelt fest, dass es getan ist. Sie wird mit dem Skript
+// verglichen: ist das Skript neuer, lief zwischendurch ein Upgrade, und es
+// wird noch einmal ausgefuehrt. Das Skript selbst ist ohnehin so gebaut,
+// dass ein zweiter Lauf nichts anrichtet.
+static void kontenEinrichten()
+{
+    const QString skript = QLatin1String("/opt/pywhatsapp/whatsapp-setup");
+    const QFileInfo si(skript);
+    if (!si.exists() || !si.isExecutable())
+        return;
+
+    QDir d(QDir::homePath() + QLatin1String("/.local/share/harbour/harbour-whatsapp"));
+    if (!d.exists())
+        d.mkpath(QLatin1String("."));
+    const QString markePfad = d.absoluteFilePath(QLatin1String("konten-eingerichtet"));
+    const QFileInfo mi(markePfad);
+    if (mi.exists() && mi.lastModified() >= si.lastModified())
+        return;
+
+    if (!QProcess::startDetached(skript, QStringList() << QLatin1String("add")))
+        return;
+    QFile marke(markePfad);
+    if (marke.open(QIODevice::WriteOnly))
+        marke.close();
+}
+
 void Backend::starten()
 {
+    kontenEinrichten();
+
     // Laeuft schon einer? Dann nur anklopfen. Das Backend bringt seinen
     // eigenen Mechanismus mit, um doppelte Instanzen zu vermeiden, aber ein
     // zweiter Start kostet auf diesem Geraet mehrere Sekunden.
@@ -278,6 +318,93 @@ void Backend::nachrichtenFertig()
         return;
     m_nachrichten = v.toList();
     emit nachrichtenChanged();
+}
+
+void Backend::gruppeLaden(const QString &jid)
+{
+    if (m_laedtGruppe)
+        return;
+    m_laedtGruppe = true;
+    m_mitglieder.clear();
+    emit gruppeChanged();
+    QUrl u = adresse(QLatin1String("/group/info"));
+    u.addQueryItem(QLatin1String("chat"), jid);
+    QNetworkReply *r = m_netz->get(QNetworkRequest(u));
+    connect(r, SIGNAL(finished()), this, SLOT(gruppeFertig()));
+}
+
+void Backend::gruppeFertig()
+{
+    QNetworkReply *r = qobject_cast<QNetworkReply *>(sender());
+    if (!r)
+        return;
+    r->deleteLater();
+    m_laedtGruppe = false;
+    if (r->error() != QNetworkReply::NoError) {
+        setzeFehler(r->errorString());
+        emit gruppeChanged();
+        return;
+    }
+    const QVariantMap info =
+            Json::parse(QString::fromUtf8(r->readAll())).toMap();
+    const QVariantList roh = info.value(QLatin1String("participants")).toList();
+
+    // Die Avatare liegen als Dateien neben den Chatbildern -- das Backend
+    // laedt sie nach Telefonnummer. Hier nur nachsehen, ob eine da ist:
+    // fehlt sie, zeigt die Liste den Ersatzkreis, und nichts haengt.
+    const QString avatarOrdner = QDir::homePath()
+            + QLatin1String("/MyDocs/Pictures/WhatsApp/avatars/");
+
+    QVariantList aus;
+    for (int i = 0; i < roh.size(); ++i) {
+        QVariantMap m = roh.at(i).toMap();
+        const QString nummer = m.value(QLatin1String("number")).toString();
+        const QString bild = avatarOrdner + nummer + QLatin1String(".jpg");
+        m.insert(QLatin1String("avatar"),
+                 QFile::exists(bild) ? bild : QString());
+        // Ohne Namen die Nummer zeigen, nicht eine leere Zeile.
+        if (m.value(QLatin1String("name")).toString().isEmpty())
+            m.insert(QLatin1String("name"), nummer);
+        aus.append(m);
+    }
+    m_mitglieder = aus;
+    emit gruppeChanged();
+}
+
+void Backend::aeltereLaden()
+{
+    if (m_laedtAeltere || m_offenerChat.isEmpty())
+        return;
+    m_laedtAeltere = true;
+    m_aeltereHinweis.clear();
+    emit aeltereChanged();
+    QUrl u = adresse(QLatin1String("/history/request"));
+    u.addQueryItem(QLatin1String("chat"), m_offenerChat);
+    QNetworkReply *r = m_netz->get(QNetworkRequest(u));
+    connect(r, SIGNAL(finished()), this, SLOT(aeltereFertig()));
+}
+
+void Backend::aeltereFertig()
+{
+    QNetworkReply *r = qobject_cast<QNetworkReply *>(sender());
+    if (!r)
+        return;
+    r->deleteLater();
+    m_laedtAeltere = false;
+    const QString antwort = QString::fromUtf8(r->readAll()).trimmed();
+    if (r->error() != QNetworkReply::NoError) {
+        m_aeltereHinweis = antwort.isEmpty() ? r->errorString() : antwort;
+        emit aeltereChanged();
+        setzeFehler(m_aeltereHinweis);
+        return;
+    }
+    // /history/request antwortet im Klartext, nicht in JSON -- und es
+    // meldet nur, dass die Anfrage beim Telefon ist. Die Nachrichten
+    // kommen von dort und treffen als Ereignis ein.
+    m_aeltereHinweis = QString::fromUtf8(
+        "Beim Telefon angefragt \xe2\x80\x93 die Nachrichten treffen "
+        "gleich ein. Das Haupttelefon muss online sein.");
+    emit aeltereChanged();
 }
 
 void Backend::senden(const QString &jid, const QString &text)

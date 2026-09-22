@@ -1,25 +1,74 @@
 #!/bin/sh
-# Traegt den lokalen Namen ein, unter dem sich das Telefon bei der
-# SIP-Bruecke anmeldet.
-#
-# Warum ueberhaupt ein Name: die Kontoverwaltung von Harmattan prueft die
-# SIP-Adresse wie eine Mailadresse und nimmt weder "whatsapp" allein noch
-# eine nackte IP. Mit whatsapp.local geht sie durch, und /etc/hosts zeigt
-# den Namen auf die Loopback-Schnittstelle, wo die Bruecke lauscht.
+# Nach dem Auspacken: Namen eintragen, die alte Instanz ablösen, WhatsApp in
+# pybridge einhaengen und die Konten anlegen.
 set -e
+
+# --- 1) Der lokale Name fuer die SIP-Bruecke --------------------------------
+# Die Kontoverwaltung prueft die SIP-Adresse wie eine Mailadresse und nimmt
+# weder "whatsapp" allein noch eine nackte IP. Mit whatsapp.local geht sie
+# durch, und /etc/hosts zeigt den Namen auf die Loopback-Schnittstelle, wo
+# die Bruecke lauscht.
 NAME=whatsapp.local
 if ! grep -q "[[:space:]]$NAME\([[:space:]]\|$\)" /etc/hosts 2>/dev/null; then
     printf '127.0.0.1 %s\n' "$NAME" >> /etc/hosts
     echo "harbour-whatsapp: $NAME in /etc/hosts eingetragen"
 fi
-# Den Anstossjob gleich starten, statt bis zum naechsten Hochfahren zu
-# warten. Er selbst startet nichts, er bittet den Sitzungs-D-Bus, den Dienst
-# zu aktivieren. Fehlschlag ist kein Grund, die Installation scheitern zu
-# lassen: beim Einrichten ohne laufende Sitzung gibt es schlicht nichts
-# anzustossen.
+
+# --- 2) Die laufende alte Instanz ablösen -----------------------------------
+# "initctl stop" genuegt dafuer nicht: der Anstossjob startet das Backend
+# nicht selbst, er bittet nur den Sitzungs-D-Bus um die Aktivierung -- und
+# haelt danach nichts in der Hand, was er beenden koennte. Beim Upgrade auf
+# 1.3 lief deshalb weiter das alte Binary, und die Korrektur, um die es
+# ging, war nicht wirksam. /quit beendet sauber: es sichert vorher.
+for p in 8085 8086 8087 8088 8089; do
+    curl -s -m 5 "http://127.0.0.1:$p/quit" >/dev/null 2>&1 || true
+done
+
+# --- 3) WhatsApp in pybridge einhaengen -------------------------------------
+# Nur wenn pybridge ueberhaupt da ist. Ohne den Verbindungsmanager gibt es
+# keine Nachrichten-App-Anbindung -- die App selbst laeuft trotzdem.
+ANGEPASST=0
+if [ -f /opt/pybridge/pybridge_cm.py ]; then
+    if /usr/bin/python /opt/pywhatsapp/patch-pybridge.py; then
+        ANGEPASST=1
+    else
+        echo "harbour-whatsapp: pybridge nicht angepasst - Nachrichten-App-Anbindung bleibt aus" >&2
+    fi
+fi
+
+# Beide muessen neu starten, und in dieser Reihenfolge: der
+# Verbindungsmanager liest seine Protokollliste nur beim Start, und Mission
+# Control fragt fuer "kennst du dieses Protokoll?" den laufenden Manager.
+# Laeuft noch der alte, antwortet mc-tool mit "Protocol whatsapp not found"
+# -- genau daran scheiterte der erste Versuch. Beide werden bei Bedarf von
+# selbst wieder aktiviert.
+if [ "$ANGEPASST" = "1" ]; then
+    pkill -f pybridge_cm.py       >/dev/null 2>&1 || true
+    sleep 1
+    pkill -f mission-control-5    >/dev/null 2>&1 || true
+    sleep 4
+fi
+
+# --- 4) Konten anlegen ------------------------------------------------------
+# Als "user" und nicht als root: mc-tool und ag-tool schreiben in das
+# Kontoverzeichnis der Sitzung. "su" geht hier nicht -- Aegis laesst root
+# die Gruppen nicht wechseln ("can't set groups: Operation not permitted").
+# start-stop-daemon --chuid kann es.
+if [ -x /opt/pywhatsapp/whatsapp-setup ]; then
+    if [ -x /sbin/start-stop-daemon ]; then
+        /sbin/start-stop-daemon --start --chuid user \
+            --exec /opt/pywhatsapp/whatsapp-setup -- add || true
+    else
+        /opt/pywhatsapp/whatsapp-setup add || true
+    fi
+fi
+
+# --- 5) Den Anstossjob starten ----------------------------------------------
+# Fehlschlag ist kein Grund, die Installation scheitern zu lassen: beim
+# Einrichten ohne laufende Sitzung gibt es schlicht nichts anzustossen.
 if [ -x /sbin/initctl ]; then
-    /sbin/initctl start apps/harbour-whatsapp \
-        >/dev/null 2>&1 || true
+    /sbin/initctl stop  apps/harbour-whatsapp >/dev/null 2>&1 || true
+    /sbin/initctl start apps/harbour-whatsapp >/dev/null 2>&1 || true
 fi
 
 exit 0
