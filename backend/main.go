@@ -3121,6 +3121,55 @@ func main() {
 		json.NewEncoder(w).Encode(d)
 	})
 
+	// Schaltet den Port einer Senke um. Nur zur Fehlersuche: auf diesem
+	// Geraet konfiguriert ein Portwechsel den Codec um, und der Verdacht
+	// ist, dass er dabei den Aufnahmepfad mitnimmt.
+	http.HandleFunc("/audio/setport", func(w http.ResponseWriter, r *http.Request) {
+		senke := r.URL.Query().Get("sink")
+		port := r.URL.Query().Get("port")
+		err := senkenPortSetzen(senke, port)
+		w.Header().Set("Content-Type", "application/json")
+		if err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+	})
+
+	// Misst zwei Sekunden lang, was am Mikrofon ankommt. Ohne das bleibt
+	// "stumm" eine Behauptung, die sich nur im Gespraech pruefen liesse.
+	http.HandleFunc("/audio/mictest", func(w http.ResponseWriter, r *http.Request) {
+		// Mit ?port=... wird mitten in der Messung umgeschaltet.
+		if p := r.URL.Query().Get("port"); p != "" {
+			senke := r.URL.Query().Get("sink")
+			if senke == "" {
+				senke = "sink.hw0"
+			}
+			vor, nach, err := mikrofonProbeMitPortwechsel(senke, p)
+			w.Header().Set("Content-Type", "application/json")
+			if err != nil {
+				w.WriteHeader(500)
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"error": err.Error(), "peakBefore": vor})
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"peakBefore": vor, "peakAfter": nach})
+			return
+		}
+		spitze, samples, quelle, err := mikrofonProbe(2 * time.Second)
+		w.Header().Set("Content-Type", "application/json")
+		if err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"peak": spitze, "samples": samples, "source": quelle,
+		})
+	})
+
 	http.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		phone := ""

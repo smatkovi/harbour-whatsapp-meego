@@ -287,6 +287,34 @@ func openCallAudio(managed bool) (*callAudio, error) {
 	// friends are all sources too), and recording from one of those gives
 	// exactly what the field log showed: a microphone level of 0.000 for
 	// the whole call.
+	// Die Wegewahl gehoert VOR die Stroeme, nicht dahinter.
+	//
+	// Auf dem N950 konfiguriert ein Portwechsel den TWL4030 um, und dabei
+	// faellt der Aufnahmepfad weg. Gemessen: bei laufender Aufnahme
+	// brachte das Umschalten auf die Hoermuschel die Spitze von 1,00 auf
+	// 0,03 -- ein Einbruch um das Dreissigfache, und im Gespraech las sich
+	// das als "mic level 0.000". Schaltet man dagegen zuerst um und
+	// eroeffnet den Aufnahmestrom danach, richtet PulseAudio den Pfad fuer
+	// die neue Lage ein, und das Mikrofon liefert voll.
+	//
+	// Hoermuschel zuerst, wie bei einem Telefonat; der Lautsprecher ist
+	// ein Schalter fuer zwischendurch.
+	if managed {
+		// voicecall-manager's playback manager owns the route while the
+		// system call UI runs the call - two hands on the switch would
+		// only fight each other
+		fmt.Println("📞 audio routing left to voicecall-manager (plugin present)")
+	} else {
+		a.routeType = earpieceRouteType()
+		if a.routeType != 0 {
+			if preferEarpiece(a.routeType, true) == nil {
+				a.routeOn = true
+			}
+		} else if a.earpiecePort != "" {
+			a.setPort(a.earpiecePort)
+		}
+	}
+
 	recOpts := []pulse.RecordOption{
 		pulse.RecordSampleRate(meowcaller.SampleRate),
 		pulse.RecordChannels(proto.ChannelMap{proto.ChannelMono}),
@@ -324,24 +352,6 @@ func openCallAudio(managed bool) (*callAudio, error) {
 	a.play.Start()
 	a.ensureAudible()
 	go a.alignEchoReference()
-	// Earpiece first, like a phone call - the speakerphone is a toggle.
-	// Route Manager when the device has an earpiece route, sink port
-	// otherwise (RooTelegram's way)
-	if managed {
-		// voicecall-manager's playback manager owns the route while the
-		// system call UI runs the call - two hands on the switch would
-		// only fight each other
-		fmt.Println("📞 audio routing left to voicecall-manager (plugin present)")
-	} else {
-		a.routeType = earpieceRouteType()
-		if a.routeType != 0 {
-			if preferEarpiece(a.routeType, true) == nil {
-				a.routeOn = true
-			}
-		} else if a.earpiecePort != "" {
-			a.setPort(a.earpiecePort)
-		}
-	}
 	fmt.Printf("📞 audio up: sink=%q earpiece=%q speaker=%q restore=%q routeType=%d managed=%v\n",
 		a.sinkName, a.earpiecePort, a.speakerPort, a.restorePort, a.routeType, managed)
 	go a.logLevels()
@@ -678,7 +688,31 @@ func (a *callAudio) SetSpeaker(on bool) error {
 	a.mu.Lock()
 	a.speakerOn = on
 	a.mu.Unlock()
+	a.aufnahmeErneuern()
 	return nil
+}
+
+// aufnahmeErneuern setzt den Aufnahmestrom neu auf.
+//
+// Noetig nach jedem Portwechsel: der TWL4030 wird dabei umkonfiguriert,
+// und eine laufende Aufnahme haengt danach an einem Pfad, der still ist.
+// Gemessen: beim Umschalten auf die Hoermuschel fiel die Spitze bei
+// laufender Aufnahme von 1,00 auf 0,03. Eroeffnet man den Strom nach dem
+// Wechsel neu, richtet PulseAudio den Pfad fuer die neue Lage ein.
+func (a *callAudio) aufnahmeErneuern() {
+	a.mu.Lock()
+	rec := a.rec
+	geschlossen := a.closed
+	a.mu.Unlock()
+	if rec == nil || geschlossen {
+		return
+	}
+	// Kurz warten: der Codec braucht einen Moment, bis die neue Lage
+	// steht. Ohne das faengt der neue Strom denselben stillen Pfad ein.
+	time.Sleep(150 * time.Millisecond)
+	rec.Stop()
+	rec.Start()
+	fmt.Println("📞 Aufnahme nach Portwechsel neu aufgesetzt")
 }
 
 func (a *callAudio) SetMuted(m bool) {
@@ -1009,14 +1043,15 @@ func audioDevices() (map[string]interface{}, error) {
 	if err := pc.RawRequest(&proto.GetSourceInfoList{}, &liste); err == nil {
 		for _, s := range liste {
 			eintrag := map[string]interface{}{
-				"id":      s.SourceName,
-				"name":    s.Device,
-				"index":   s.SourceIndex,
-				"mute":    s.Mute,
-				"volume":  mittel(s.ChannelVolumes),
-				"monitor": s.MonitorSourceName,
-				"driver":  s.Driver,
-				"state":   s.State,
+				"id":         s.SourceName,
+				"name":       s.Device,
+				"index":      s.SourceIndex,
+				"mute":       s.Mute,
+				"volume":     mittel(s.ChannelVolumes),
+				"monitor":    s.MonitorSourceName,
+				"driver":     s.Driver,
+				"state":      s.State,
+				"activePort": s.ActivePortName,
 			}
 			namen := []string{}
 			for _, p := range s.Ports {
@@ -1034,13 +1069,14 @@ func audioDevices() (map[string]interface{}, error) {
 	if err := pc.RawRequest(&proto.GetSinkInfoList{}, &sliste); err == nil {
 		for _, s := range sliste {
 			eintrag := map[string]interface{}{
-				"id":     s.SinkName,
-				"name":   s.Device,
-				"index":  s.SinkIndex,
-				"mute":   s.Mute,
-				"volume": mittel(s.ChannelVolumes),
-				"driver": s.Driver,
-				"state":  s.State,
+				"id":         s.SinkName,
+				"name":       s.Device,
+				"index":      s.SinkIndex,
+				"mute":       s.Mute,
+				"volume":     mittel(s.ChannelVolumes),
+				"driver":     s.Driver,
+				"state":      s.State,
+				"activePort": s.ActivePortName,
 			}
 			namen := []string{}
 			for _, p := range s.Ports {
@@ -1052,4 +1088,155 @@ func audioDevices() (map[string]interface{}, error) {
 	}
 
 	return map[string]interface{}{"sources": quellen, "sinks": senken}, nil
+}
+
+// mikrofonProbe oeffnet kurz einen Aufnahmestrom und meldet den lautesten
+// Ausschlag. Ohne so eine Messung bleibt "das Mikrofon ist stumm" eine
+// Behauptung, die sich nur in einem echten Gespraech pruefen liesse.
+func mikrofonProbe(dauer time.Duration) (float32, uint64, string, error) {
+	opts := []pulse.ClientOption{
+		pulse.ClientApplicationName("harbour-whatsapp"),
+		pulse.ClientTimeout(5 * time.Second),
+	}
+	if srv := pulseServerString(); srv != "" {
+		opts = append(opts, pulse.ClientServerString(srv))
+	}
+	pc, err := pulse.NewClient(opts...)
+	if err != nil {
+		return 0, 0, "", err
+	}
+	defer pc.Close()
+
+	a := &callAudio{pc: pc}
+	var spitze float32
+	var samples uint64
+	var mu sync.Mutex
+
+	recOpts := []pulse.RecordOption{
+		pulse.RecordSampleRate(meowcaller.SampleRate),
+		pulse.RecordChannels(proto.ChannelMap{proto.ChannelMono}),
+		pulse.RecordLatency(0.04),
+		pulse.RecordMediaName("Mikrofonprobe"),
+	}
+	quelle := ""
+	if src := a.pickMicrophone(); src != nil {
+		quelle = src.ID()
+		recOpts = append(recOpts, pulse.RecordSource(src))
+	}
+	rec, err := pc.NewRecord(pulse.Float32Writer(func(in []float32) (int, error) {
+		p := peakOf(in)
+		mu.Lock()
+		samples += uint64(len(in))
+		if p > spitze {
+			spitze = p
+		}
+		mu.Unlock()
+		return len(in), nil
+	}), recOpts...)
+	if err != nil {
+		return 0, 0, quelle, err
+	}
+	rec.Start()
+	time.Sleep(dauer)
+	rec.Stop()
+	rec.Close()
+
+	mu.Lock()
+	defer mu.Unlock()
+	return spitze, samples, quelle, nil
+}
+
+// mikrofonProbeMitPortwechsel misst zuerst, schaltet dann den Port der
+// Senke um und misst noch einmal -- mit derselben laufenden Aufnahme.
+//
+// Darum geht es: im Gespraech wird der Port umgeschaltet, NACHDEM die
+// Aufnahme schon laeuft. Ein Portwechsel konfiguriert auf diesem Geraet
+// den Codec um, und der Verdacht ist, dass er den Aufnahmepfad dabei
+// mitnimmt. Vorher und nachher getrennt zu messen ist der einzige Weg,
+// das zu zeigen, ohne jemanden um ein Telefonat zu bitten.
+func mikrofonProbeMitPortwechsel(senke, port string) (float32, float32, error) {
+	opts := []pulse.ClientOption{
+		pulse.ClientApplicationName("harbour-whatsapp"),
+		pulse.ClientTimeout(5 * time.Second),
+	}
+	if srv := pulseServerString(); srv != "" {
+		opts = append(opts, pulse.ClientServerString(srv))
+	}
+	pc, err := pulse.NewClient(opts...)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer pc.Close()
+
+	a := &callAudio{pc: pc}
+	var vorher, nachher float32
+	var phase int
+	var mu sync.Mutex
+
+	recOpts := []pulse.RecordOption{
+		pulse.RecordSampleRate(meowcaller.SampleRate),
+		pulse.RecordChannels(proto.ChannelMap{proto.ChannelMono}),
+		pulse.RecordLatency(0.04),
+		pulse.RecordMediaName("Mikrofonprobe"),
+	}
+	if src := a.pickMicrophone(); src != nil {
+		recOpts = append(recOpts, pulse.RecordSource(src))
+	}
+	rec, err := pc.NewRecord(pulse.Float32Writer(func(in []float32) (int, error) {
+		p := peakOf(in)
+		mu.Lock()
+		if phase == 0 {
+			if p > vorher {
+				vorher = p
+			}
+		} else if p > nachher {
+			nachher = p
+		}
+		mu.Unlock()
+		return len(in), nil
+	}), recOpts...)
+	if err != nil {
+		return 0, 0, err
+	}
+	rec.Start()
+	time.Sleep(2 * time.Second)
+
+	if err := pc.RawRequest(&proto.SetSinkPort{
+		SinkIndex: proto.Undefined, SinkName: senke, Port: port,
+	}, nil); err != nil {
+		rec.Stop()
+		rec.Close()
+		return vorher, 0, err
+	}
+	mu.Lock()
+	phase = 1
+	mu.Unlock()
+
+	time.Sleep(2 * time.Second)
+	rec.Stop()
+	rec.Close()
+
+	mu.Lock()
+	defer mu.Unlock()
+	return vorher, nachher, nil
+}
+
+// senkenPortSetzen schaltet den aktiven Port einer Senke um -- zur
+// Fehlersuche ausserhalb eines Gespraechs.
+func senkenPortSetzen(senke, port string) error {
+	opts := []pulse.ClientOption{
+		pulse.ClientApplicationName("harbour-whatsapp"),
+		pulse.ClientTimeout(5 * time.Second),
+	}
+	if srv := pulseServerString(); srv != "" {
+		opts = append(opts, pulse.ClientServerString(srv))
+	}
+	pc, err := pulse.NewClient(opts...)
+	if err != nil {
+		return err
+	}
+	defer pc.Close()
+	return pc.RawRequest(&proto.SetSinkPort{
+		SinkIndex: proto.Undefined, SinkName: senke, Port: port,
+	}, nil)
 }
