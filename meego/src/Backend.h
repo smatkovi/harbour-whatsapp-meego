@@ -37,6 +37,12 @@ class Backend : public QObject
     Q_PROPERTY(QVariantList chats READ chats NOTIFY chatsChanged)
     Q_PROPERTY(QVariantList nachrichten READ nachrichten NOTIFY nachrichtenChanged)
     Q_PROPERTY(QString offenerChat READ offenerChat NOTIFY nachrichtenChanged)
+    Q_PROPERTY(bool anrufAktiv READ anrufAktiv NOTIFY anrufChanged)
+    Q_PROPERTY(QString anrufName READ anrufName NOTIFY anrufChanged)
+    Q_PROPERTY(QString anrufPhase READ anrufPhase NOTIFY anrufChanged)
+    Q_PROPERTY(bool anrufAusgehend READ anrufAusgehend NOTIFY anrufChanged)
+    Q_PROPERTY(int anrufSekunden READ anrufSekunden NOTIFY anrufChanged)
+    Q_PROPERTY(bool anrufStumm READ anrufStumm NOTIFY anrufChanged)
 
 public:
     explicit Backend(const QString &binary, QObject *parent = 0);
@@ -51,6 +57,12 @@ public:
     QVariantList chats() const { return m_chats; }
     QVariantList nachrichten() const { return m_nachrichten; }
     QString offenerChat() const { return m_offenerChat; }
+    bool anrufAktiv() const { return m_anrufAktiv; }
+    QString anrufName() const { return m_anrufName; }
+    QString anrufPhase() const { return m_anrufPhase; }
+    bool anrufAusgehend() const { return m_anrufAus; }
+    int anrufSekunden() const { return m_anrufSek; }
+    bool anrufStumm() const { return m_anrufStumm; }
 
     // Startet den Dienst, falls er nicht schon laeuft, und beginnt abzufragen.
     Q_INVOKABLE void starten();
@@ -66,6 +78,12 @@ public:
     Q_INVOKABLE void medienLaden(const QString &nachrichtenId);
     Q_INVOKABLE void oeffnen(const QString &pfad);
     Q_INVOKABLE QString groesse(const QVariant &bytes) const;
+    Q_INVOKABLE void anrufen(const QString &jid);
+    Q_INVOKABLE void anrufAnnehmen();
+    Q_INVOKABLE void anrufAblehnen();
+    Q_INVOKABLE void anrufAuflegen();
+    Q_INVOKABLE void anrufStummSchalten(bool an);
+    Q_INVOKABLE void anrufLautsprecher(bool an);
     // Dateiwaehler: Harmattan bringt keinen mit, den eine fremde App
     // aufrufen koennte, also listet die App selbst.
     Q_INVOKABLE QString startVerzeichnis() const;
@@ -78,6 +96,7 @@ signals:
     void chatsChanged();
     void nachrichtenChanged();
     void fehlerChanged();
+    void anrufChanged();
 
 private slots:
     void statusFertig();
@@ -85,6 +104,8 @@ private slots:
     void nachrichtenFertig();
     void sendenFertig();
     void medienFertig();
+    void anrufZustandFertig();
+    void anrufBefehlFertig();
     void anhangFertig();
     void ereignisFertig();
     void kopplungFertig();
@@ -96,6 +117,7 @@ private:
     // nicht von Hand kodiert in die Zeichenkette.
     QUrl adresse(const QString &pfad);
     void ereignisPoll();
+    void anrufAbfragen();
     // Kopiert einen Anhang nach MyDocs/Downloads und gibt den
     // dortigen Pfad zurueck -- nur dort findet ihn das Geraet.
     QString nachMyDocs(const QString &pfad);
@@ -120,6 +142,15 @@ private:
     QVariantList m_chats;
     QVariantList m_nachrichten;
     QString m_offenerChat;
+
+    QTimer *m_anrufTakt;
+    QNetworkReply *m_anrufAbfrage;   // hoechstens eine offen
+    bool m_anrufAktiv;
+    QString m_anrufName;
+    QString m_anrufPhase;
+    bool m_anrufAus;
+    int m_anrufSek;
+    bool m_anrufStumm;
 };
 
 #endif

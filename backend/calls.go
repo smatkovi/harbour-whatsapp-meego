@@ -183,6 +183,15 @@ func callDisplayName(user, alt string, isLid bool) string {
 	return name
 }
 
+// sipAnrufWenn ruft die Bruecke nur, wenn die Bedingung stimmt -- spart den
+// Plattformdateien eine zweite Fassung.
+func sipAnrufWenn(wenn bool, name, nummer string, beiAuflegen func()) (meowcallerQuelle, meowcallerSenke, bool) {
+	if !wenn {
+		return nil, nil, false
+	}
+	return sipAnruf(name, nummer, beiAuflegen)
+}
+
 // Kurznamen fuer die beiden Tonenden. Die Plattformdateien reichen sie
 // durch, ohne meowcaller selbst einzubinden.
 type meowcallerQuelle = meowcaller.AudioSource
@@ -286,7 +295,13 @@ func (s *callSession) startAudio() {
 	// Geraets, auch am Sperrbildschirm, und Annehmen/Ablehnen macht die
 	// systemeigene Oberflaeche. Gibt es keine Bruecke oder kein
 	// registriertes Telefon, faellt es auf PulseAudio in der App zurueck.
-	if quelle, senke, ok := sipAnruf(s.Name, s.Peer, func() {
+	// Nur eingehende Anrufe gehen ueber SIP. Bei einem ausgehenden das
+	// eigene Telefon klingeln zu lassen waere absurd -- der Nutzer hat
+	// gerade selbst gewaehlt; der laeuft ueber die Anrufseite der App.
+	s.mu.Lock()
+	eingehend := !s.Outgoing
+	s.mu.Unlock()
+	if quelle, senke, ok := sipAnrufWenn(eingehend, s.Name, s.Peer, func() {
 		s.finish("hangup")
 	}); ok {
 		s.mu.Lock()

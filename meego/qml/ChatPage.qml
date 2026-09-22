@@ -11,6 +11,18 @@ Page {
             platformIconId: "toolbar-back"
             onClicked: { Dienst.chatSchliessen(); pageStack.pop() }
         }
+        ToolIcon {
+            // Nur bei Einzelchats: eine Gruppe anzurufen unterstuetzt das
+            // Backend nicht, und ein Knopf, der nichts tut, ist schlimmer
+            // als keiner.
+            platformIconId: "toolbar-dialer"
+            visible: seite.jid.length <= 15
+            onClicked: {
+                Dienst.anrufen(seite.jid)
+                pageStack.push(Qt.resolvedUrl("CallPage.qml"),
+                               { titel: seite.titel })
+            }
+        }
         Label {
             text: seite.titel
             elide: Text.ElideRight

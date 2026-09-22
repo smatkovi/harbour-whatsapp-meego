@@ -41,6 +41,12 @@ Backend::Backend(const QString &binary, QObject *parent)
     , m_seq(0)
     , m_gekoppelt(false)
     , m_verbunden(false)
+    , m_anrufTakt(new QTimer(this))
+    , m_anrufAbfrage(0)
+    , m_anrufAktiv(false)
+    , m_anrufAus(false)
+    , m_anrufSek(0)
+    , m_anrufStumm(false)
 {
     m_zustand = QLatin1String("starting");
     // Der Takt ist nur das Sicherheitsnetz; die eigentliche Aktualisierung
@@ -48,6 +54,13 @@ Backend::Backend(const QString &binary, QObject *parent)
     // Long-Poll einmal im Nichts endet.
     m_takt->setInterval(15000);
     connect(m_takt, SIGNAL(timeout()), this, SLOT(abfragen()));
+
+    // Anrufe brauchen einen engeren Takt als der Rest: zwei Sekunden, damit
+    // ein eingehender Anruf nicht erst nach einer Viertelminute auffaellt.
+    // Wie beim Ereignis-Poll bleibt hoechstens eine Abfrage offen -- Qt 4.7
+    // laesst nur sechs Verbindungen je Host zu.
+    m_anrufTakt->setInterval(2000);
+    connect(m_anrufTakt, SIGNAL(timeout()), this, SLOT(anrufAbfragen()));
 }
 
 Backend::~Backend()
@@ -122,6 +135,7 @@ void Backend::starten()
         m_dienst->start(m_binary, QStringList());
     }
     m_takt->start();
+    m_anrufTakt->start();
     QTimer::singleShot(1500, this, SLOT(abfragen()));
 }
 
@@ -552,4 +566,103 @@ void Backend::anhangFertig()
     setzeFehler(QString());
     if (!m_offenerChat.isEmpty())
         chatOeffnen(m_offenerChat);
+}
+
+// ------------------------------------------------------------------ Anrufe
+
+void Backend::anrufAbfragen()
+{
+    if (m_anrufAbfrage)
+        return;
+    m_anrufAbfrage = hole(QLatin1String("/call/state"));
+    connect(m_anrufAbfrage, SIGNAL(finished()), this, SLOT(anrufZustandFertig()));
+}
+
+void Backend::anrufZustandFertig()
+{
+    QNetworkReply *r = qobject_cast<QNetworkReply *>(sender());
+    if (!r)
+        return;
+    if (r == m_anrufAbfrage)
+        m_anrufAbfrage = 0;
+    r->deleteLater();
+    if (r->error() != QNetworkReply::NoError)
+        return;
+    const QVariantMap s = Json::parse(QString::fromUtf8(r->readAll())).toMap();
+    if (s.isEmpty())
+        return;
+
+    const bool aktiv = s.value(QLatin1String("active")).toBool();
+    const QString name = s.value(QLatin1String("name")).toString();
+    const QString phase = s.value(QLatin1String("phase")).toString();
+    const bool aus = s.value(QLatin1String("outgoing")).toBool();
+    const int sek = s.value(QLatin1String("seconds")).toInt();
+    const bool stumm = s.value(QLatin1String("muted")).toBool();
+
+    if (aktiv != m_anrufAktiv || name != m_anrufName || phase != m_anrufPhase
+            || aus != m_anrufAus || sek != m_anrufSek || stumm != m_anrufStumm) {
+        m_anrufAktiv = aktiv;
+        m_anrufName = name;
+        m_anrufPhase = phase;
+        m_anrufAus = aus;
+        m_anrufSek = sek;
+        m_anrufStumm = stumm;
+        emit anrufChanged();
+    }
+    const QString af = s.value(QLatin1String("audioError")).toString();
+    if (!af.isEmpty())
+        setzeFehler(af);
+}
+
+void Backend::anrufen(const QString &jid)
+{
+    if (jid.isEmpty())
+        return;
+    QUrl u = adresse(QLatin1String("/call/start"));
+    u.addQueryItem(QLatin1String("jid"), jid);
+    QNetworkReply *r = m_netz->get(QNetworkRequest(u));
+    connect(r, SIGNAL(finished()), this, SLOT(anrufBefehlFertig()));
+}
+
+void Backend::anrufAnnehmen()  { connect(hole(QLatin1String("/call/accept")), SIGNAL(finished()), this, SLOT(anrufBefehlFertig())); }
+void Backend::anrufAblehnen()  { connect(hole(QLatin1String("/call/reject")), SIGNAL(finished()), this, SLOT(anrufBefehlFertig())); }
+void Backend::anrufAuflegen()  { connect(hole(QLatin1String("/call/hangup")), SIGNAL(finished()), this, SLOT(anrufBefehlFertig())); }
+
+void Backend::anrufStummSchalten(bool an)
+{
+    QUrl u = adresse(QLatin1String("/call/mute"));
+    u.addQueryItem(QLatin1String("on"), an ? QLatin1String("1") : QLatin1String("0"));
+    QNetworkReply *r = m_netz->get(QNetworkRequest(u));
+    connect(r, SIGNAL(finished()), this, SLOT(anrufBefehlFertig()));
+}
+
+void Backend::anrufLautsprecher(bool an)
+{
+    QUrl u = adresse(QLatin1String("/call/speaker"));
+    u.addQueryItem(QLatin1String("on"), an ? QLatin1String("1") : QLatin1String("0"));
+    QNetworkReply *r = m_netz->get(QNetworkRequest(u));
+    connect(r, SIGNAL(finished()), this, SLOT(anrufBefehlFertig()));
+}
+
+// Alle Anrufbefehle antworten mit dem Anrufzustand -- die Antwort gleich
+// auswerten spart eine Abfrage und laesst die Oberflaeche sofort reagieren.
+void Backend::anrufBefehlFertig()
+{
+    QNetworkReply *r = qobject_cast<QNetworkReply *>(sender());
+    if (!r)
+        return;
+    r->deleteLater();
+    const QByteArray roh = r->readAll();
+    if (r->error() != QNetworkReply::NoError) {
+        setzeFehler(QString::fromUtf8(roh).trimmed());
+        return;
+    }
+    const QVariantMap s = Json::parse(QString::fromUtf8(roh)).toMap();
+    const QString fehler = s.value(QLatin1String("error")).toString();
+    if (!fehler.isEmpty()) {
+        setzeFehler(fehler);
+        return;
+    }
+    setzeFehler(QString());
+    anrufAbfragen();
 }
