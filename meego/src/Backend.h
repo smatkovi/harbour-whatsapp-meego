@@ -48,6 +48,9 @@ class Backend : public QObject
     Q_PROPERTY(QString aeltereHinweis READ aeltereHinweis NOTIFY aeltereChanged)
     Q_PROPERTY(QVariantList mitglieder READ mitglieder NOTIFY gruppeChanged)
     Q_PROPERTY(bool laedtGruppe READ laedtGruppe NOTIFY gruppeChanged)
+    Q_PROPERTY(QVariantList kontakte READ kontakte NOTIFY kontakteChanged)
+    Q_PROPERTY(QString beitrittHinweis READ beitrittHinweis NOTIFY beitrittChanged)
+    Q_PROPERTY(bool tritteBei READ tritteBei NOTIFY beitrittChanged)
 
 public:
     explicit Backend(const QString &binary, QObject *parent = 0);
@@ -72,6 +75,9 @@ public:
     QString aeltereHinweis() const { return m_aeltereHinweis; }
     QVariantList mitglieder() const { return m_mitglieder; }
     bool laedtGruppe() const { return m_laedtGruppe; }
+    QVariantList kontakte() const { return m_kontakte; }
+    QString beitrittHinweis() const { return m_beitrittHinweis; }
+    bool tritteBei() const { return m_tritteBei; }
 
     // Startet den Dienst, falls er nicht schon laeuft, und beginnt abzufragen.
     Q_INVOKABLE void starten();
@@ -91,6 +97,13 @@ public:
     // Zwischenspeicher -- bei 137 Leuten will man sie aber nicht bei jedem
     // Oeffnen des Chats mitladen, deshalb auf Abruf.
     Q_INVOKABLE void gruppeLaden(const QString &jid);
+    // Das Adressbuch, wie das Backend es kennt -- nach Namen sortiert.
+    Q_INVOKABLE void kontakteLaden();
+    // Einer Gruppe ueber ihren Einladungslink beitreten.
+    Q_INVOKABLE void gruppeBeitreten(const QString &link);
+    // Eine Nummer auf die Form bringen, die das Backend erwartet: nur
+    // Ziffern, mit Landesvorwahl, ohne Plus.
+    Q_INVOKABLE QString nummerNormalisieren(const QString &eingabe) const;
     Q_INVOKABLE QString zeit(const QVariant &wert) const;
     // Holt den Anhang einer Nachricht aufs Geraet. Bilder und Dokumente
     // liegen erst nach dem Abruf lokal -- auf 2G will man das nicht
@@ -126,6 +139,10 @@ signals:
     void tonFehler(const QString &text);
     void aeltereChanged();
     void gruppeChanged();
+    void kontakteChanged();
+    void beitrittChanged();
+    // Traegt die Kennung des neuen Chats, wenn ein Beitritt geklappt hat.
+    void beigetreten(const QString &jid);
 
 private slots:
     void statusFertig();
@@ -138,6 +155,8 @@ private slots:
     void abmeldenFertig();
     void aeltereFertig();
     void gruppeFertig();
+    void kontakteFertig();
+    void beitrittFertig();
     void umwandlungFertig(int code);
     void tonUmgewandelt(int code);
     void anhangFertig();
@@ -193,6 +212,10 @@ private:
 
     QVariantList m_mitglieder;
     bool m_laedtGruppe;
+
+    QVariantList m_kontakte;
+    QString m_beitrittHinweis;
+    bool m_tritteBei;
 };
 
 #endif

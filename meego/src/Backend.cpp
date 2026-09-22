@@ -49,6 +49,7 @@ Backend::Backend(const QString &binary, QObject *parent)
     , m_anrufStumm(false)
     , m_laedtAeltere(false)
     , m_laedtGruppe(false)
+    , m_tritteBei(false)
 {
     m_zustand = QLatin1String("starting");
     // Der Takt ist nur das Sicherheitsnetz; die eigentliche Aktualisierung
@@ -318,6 +319,125 @@ void Backend::nachrichtenFertig()
         return;
     m_nachrichten = v.toList();
     emit nachrichtenChanged();
+}
+
+QString Backend::nummerNormalisieren(const QString &eingabe) const
+{
+    // WhatsApp adressiert ueber die blanke Nummer mit Landesvorwahl:
+    // keine Pluszeichen, keine Leerzeichen, keine Bindestriche. Eine
+    // fuehrende Doppelnull ist dasselbe wie ein Plus.
+    QString n;
+    for (int i = 0; i < eingabe.size(); ++i) {
+        const QChar c = eingabe.at(i);
+        if (c.isDigit())
+            n.append(c);
+    }
+    if (n.startsWith(QLatin1String("00")))
+        n = n.mid(2);
+    return n;
+}
+
+void Backend::kontakteLaden()
+{
+    QNetworkReply *r = hole(QLatin1String("/contacts"));
+    connect(r, SIGNAL(finished()), this, SLOT(kontakteFertig()));
+}
+
+void Backend::kontakteFertig()
+{
+    QNetworkReply *r = qobject_cast<QNetworkReply *>(sender());
+    if (!r)
+        return;
+    r->deleteLater();
+    if (r->error() != QNetworkReply::NoError) {
+        setzeFehler(r->errorString());
+        return;
+    }
+    // /contacts liefert eine Abbildung Kennung -> Name. Fuer eine Liste
+    // muss daraus eine Folge werden, und sortiert gehoert sie auch.
+    const QVariantMap karte =
+            Json::parse(QString::fromUtf8(r->readAll())).toMap();
+    const QString avatarOrdner = QDir::homePath()
+            + QLatin1String("/MyDocs/Pictures/WhatsApp/avatars/");
+
+    QVariantList aus;
+    for (QVariantMap::const_iterator it = karte.constBegin();
+         it != karte.constEnd(); ++it) {
+        const QString jid = it.key();
+        const QString name = it.value().toString();
+        // Gruppen gehoeren nicht ins Adressbuch: sie stehen ohnehin in der
+        // Chatliste, und "neuer Chat" meint eine Person.
+        if (jid.contains(QLatin1Char('-')) || jid.size() > 15)
+            continue;
+        if (name.isEmpty())
+            continue;
+        QVariantMap m;
+        m.insert(QLatin1String("jid"), jid);
+        m.insert(QLatin1String("name"), name);
+        const QString bild = avatarOrdner + jid + QLatin1String(".jpg");
+        m.insert(QLatin1String("avatar"),
+                 QFile::exists(bild) ? bild : QString());
+        aus.append(m);
+    }
+    // QVariantMap ist nach Schluessel sortiert, also nach Nummer -- fuer
+    // eine Namensliste unbrauchbar. Einfache Einfuegesortierung reicht:
+    // es sind ein paar hundert Eintraege, und sie kommen genau einmal.
+    for (int i = 1; i < aus.size(); ++i) {
+        const QVariant v = aus.at(i);
+        const QString n = v.toMap().value(QLatin1String("name")).toString();
+        int j = i - 1;
+        while (j >= 0 && QString::localeAwareCompare(
+                   aus.at(j).toMap().value(QLatin1String("name")).toString(), n) > 0) {
+            aus[j + 1] = aus.at(j);
+            --j;
+        }
+        aus[j + 1] = v;
+    }
+    m_kontakte = aus;
+    emit kontakteChanged();
+}
+
+void Backend::gruppeBeitreten(const QString &link)
+{
+    if (m_tritteBei || link.trimmed().isEmpty())
+        return;
+    m_tritteBei = true;
+    m_beitrittHinweis.clear();
+    emit beitrittChanged();
+    QUrl u = adresse(QLatin1String("/group/join"));
+    u.addQueryItem(QLatin1String("link"), link.trimmed());
+    QNetworkReply *r = m_netz->get(QNetworkRequest(u));
+    connect(r, SIGNAL(finished()), this, SLOT(beitrittFertig()));
+}
+
+void Backend::beitrittFertig()
+{
+    QNetworkReply *r = qobject_cast<QNetworkReply *>(sender());
+    if (!r)
+        return;
+    r->deleteLater();
+    m_tritteBei = false;
+    const QByteArray roh = r->readAll();
+    if (r->error() != QNetworkReply::NoError) {
+        // Das Backend schickt den Fehler im Klartext, nicht als JSON --
+        // der ist brauchbarer als "Unknown error".
+        const QString text = QString::fromUtf8(roh).trimmed();
+        m_beitrittHinweis = text.isEmpty() ? r->errorString() : text;
+        emit beitrittChanged();
+        return;
+    }
+    const QString jid = Json::parse(QString::fromUtf8(roh))
+            .toMap().value(QLatin1String("jid")).toString();
+    if (jid.isEmpty()) {
+        m_beitrittHinweis = QLatin1String("Beitritt ohne Kennung zurueckgekommen");
+        emit beitrittChanged();
+        return;
+    }
+    m_beitrittHinweis = QLatin1String("Beigetreten");
+    emit beitrittChanged();
+    // Die Chatliste kennt die neue Gruppe noch nicht.
+    neuLaden();
+    emit beigetreten(jid);
 }
 
 void Backend::gruppeLaden(const QString &jid)

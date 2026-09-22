@@ -31,13 +31,30 @@ Page {
                                { titel: seite.titel })
             }
         }
-        Label {
-            text: seite.titel
-            elide: Text.ElideRight
-            maximumLineCount: 1
-            font.pixelSize: 24
-            width: parent.width - 140
-            anchors.verticalCenter: parent.verticalCenter
+        // Der Name ist bei Gruppen zugleich der Griff zur Mitgliederliste.
+        // Ein Symbol in der Leiste findet man erst, wenn man danach sucht;
+        // auf den Namen zu tippen ist das, was man ohnehin versucht.
+        Item {
+            width: parent.width - 220
+            height: parent.height
+            Label {
+                id: titelText
+                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width
+                text: seite.titel
+                elide: Text.ElideRight
+                maximumLineCount: 1
+                font.pixelSize: 24
+                color: mitgliederBereich.pressed ? "#7fbf7f" : "#ffffff"
+            }
+            MouseArea {
+                id: mitgliederBereich
+                anchors.fill: parent
+                enabled: seite.jid.length > 15
+                onClicked: pageStack.push(
+                    Qt.resolvedUrl("GroupMembersPage.qml"),
+                    { titel: seite.titel, jid: seite.jid })
+            }
         }
     }
 

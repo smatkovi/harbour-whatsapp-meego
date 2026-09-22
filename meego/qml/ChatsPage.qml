@@ -10,6 +10,11 @@ Page {
             onClicked: Dienst.neuLaden()
         }
         ToolIcon {
+            // Neuer Chat: Adressbuch, eine fremde Nummer, ein Gruppenlink.
+            platformIconId: "toolbar-add"
+            onClicked: pageStack.push(Qt.resolvedUrl("NewChatPage.qml"))
+        }
+        ToolIcon {
             platformIconId: "toolbar-view-menu"
             onClicked: menue.open()
         }
