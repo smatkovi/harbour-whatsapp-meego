@@ -1,0 +1,15 @@
+#!/bin/sh
+# Traegt den lokalen Namen ein, unter dem sich das Telefon bei der
+# SIP-Bruecke anmeldet.
+#
+# Warum ueberhaupt ein Name: die Kontoverwaltung von Harmattan prueft die
+# SIP-Adresse wie eine Mailadresse und nimmt weder "whatsapp" allein noch
+# eine nackte IP. Mit whatsapp.local geht sie durch, und /etc/hosts zeigt
+# den Namen auf die Loopback-Schnittstelle, wo die Bruecke lauscht.
+set -e
+NAME=whatsapp.local
+if ! grep -q "[[:space:]]$NAME\([[:space:]]\|$\)" /etc/hosts 2>/dev/null; then
+    printf '127.0.0.1 %s\n' "$NAME" >> /etc/hosts
+    echo "harbour-whatsapp: $NAME in /etc/hosts eingetragen"
+fi
+exit 0

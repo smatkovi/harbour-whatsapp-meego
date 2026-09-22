@@ -1,0 +1,13 @@
+#!/bin/sh
+# Nimmt den Eintrag wieder heraus -- aber nur unseren, und nur wenn ihn
+# niemand sonst benutzt.
+set -e
+NAME=whatsapp.local
+if [ -f /etc/hosts ] && grep -q "^127\.0\.0\.1[[:space:]]\+$NAME[[:space:]]*$" /etc/hosts; then
+    # Zeilenweise filtern statt sed -i: /etc/hosts ist zu wichtig, um es
+    # an einem halb geschriebenen Ergebnis scheitern zu lassen.
+    grep -v "^127\.0\.0\.1[[:space:]]\+$NAME[[:space:]]*$" /etc/hosts > /etc/hosts.neu
+    mv /etc/hosts.neu /etc/hosts
+    echo "harbour-whatsapp: $NAME aus /etc/hosts entfernt"
+fi
+exit 0

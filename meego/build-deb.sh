@@ -31,6 +31,12 @@ chmod 755 "$STAGE/opt/harbour-whatsapp/bin/"*
 cp meego/qml/*.qml "$STAGE/opt/harbour-whatsapp/qml/"
 cp meego/harbour-whatsapp.desktop "$STAGE/usr/share/applications/"
 
+# postinst/prerm tragen whatsapp.local in /etc/hosts ein und wieder aus:
+# die Kontoverwaltung prueft die SIP-Adresse wie eine Mailadresse und nimmt
+# weder einen nackten Namen noch eine IP.
+cp meego/postinst meego/prerm "$STAGE/DEBIAN/"
+chmod 755 "$STAGE/DEBIAN/postinst" "$STAGE/DEBIAN/prerm"
+
 # Das Symbol traegt die exakte Silhouette der Standard-Apps, erzeugt mit
 # ~/ps/meego-icon-tool/squircle.py --fill. Ein rundes Icon faellt im Raster
 # des Startbildschirms sofort auf.
