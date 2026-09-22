@@ -1152,12 +1152,7 @@ func downloadAvatar(jid string) string {
 		return ""
 	}
 
-	var fullJid types.JID
-	if len(jid) > 15 {
-		fullJid = types.NewJID(jid, "g.us")
-	} else {
-		fullJid = types.NewJID(jid, "s.whatsapp.net")
-	}
+	fullJid := zielJID(jid)
 
 	pic, err := client.GetProfilePictureInfo(ctx, fullJid, &whatsmeow.GetProfilePictureParams{})
 	if err != nil || pic == nil {
@@ -1813,12 +1808,7 @@ func dirWritable(dir string) bool {
 	return true
 }
 
-func toChatJID(to string) types.JID {
-	if len(to) > 15 {
-		return types.NewJID(to, types.GroupServer)
-	}
-	return types.NewJID(to, types.DefaultUserServer)
-}
+func toChatJID(to string) types.JID { return zielJID(to) }
 
 func pollText(p pollLike) string {
 	t := "📊 Poll: " + p.GetName()
@@ -2883,10 +2873,8 @@ func sendMedia(to string, filePath string, caption string) error {
 	var jid types.JID
 	if to == "status" {
 		jid = types.StatusBroadcastJID // eigener Medien-Status
-	} else if len(to) > 15 {
-		jid = types.NewJID(to, "g.us")
 	} else {
-		jid = types.NewJID(to, "s.whatsapp.net")
+		jid = zielJID(to)
 	}
 	var mediaType whatsmeow.MediaType
 	var mediaTypeStr string
@@ -4031,12 +4019,7 @@ func main() {
 			http.Error(w, "chat and id required", 400)
 			return
 		}
-		var jid types.JID
-		if len(chat) > 15 {
-			jid = types.NewJID(chat, "g.us")
-		} else {
-			jid = types.NewJID(chat, "s.whatsapp.net")
-		}
+		jid := zielJID(chat)
 		pinType := waE2E.PinInChatMessage_PIN_FOR_ALL
 		if unpin {
 			pinType = waE2E.PinInChatMessage_UNPIN_FOR_ALL
@@ -4071,12 +4054,7 @@ func main() {
 			http.Error(w, "jid required", 400)
 			return
 		}
-		var jid types.JID
-		if len(chat) > 15 {
-			jid = types.NewJID(chat, "g.us")
-		} else {
-			jid = types.NewJID(chat, "s.whatsapp.net")
-		}
+		jid := zielJID(chat)
 		if err := client.SetDisappearingTimer(ctx, jid, time.Duration(secs)*time.Second, time.Now()); err != nil {
 			http.Error(w, err.Error(), 500)
 			return
@@ -4509,7 +4487,7 @@ func main() {
 				out["participants"] = len(gi.Participants)
 			}
 		} else {
-			uj := types.NewJID(jid, "s.whatsapp.net")
+			uj := zielJID(jid)
 			if infos, err := client.GetUserInfo(ctx, []types.JID{uj}); err == nil {
 				if ui, ok := infos[uj]; ok {
 					out["status"] = ui.Status

@@ -59,7 +59,23 @@ Page {
         return m + ":" + (r < 10 ? "0" + r : r)
     }
 
+    // Ohne das blieb ein gescheiterter Anruf als blosses "beendet" stehen,
+    // und der Grund stand nur im Log.
+    Label {
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: knoepfe.top
+        anchors.bottomMargin: 24
+        width: parent.width - 60
+        horizontalAlignment: Text.AlignHCenter
+        wrapMode: Text.Wrap
+        color: "#ff6060"
+        font.pixelSize: 19
+        visible: Dienst.fehler !== ""
+        text: Dienst.fehler
+    }
+
     Row {
+        id: knoepfe
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.bottom: parent.bottom
         anchors.bottomMargin: 40

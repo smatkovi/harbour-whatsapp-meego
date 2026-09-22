@@ -699,8 +699,15 @@ func startCall(user string) (*callSession, error) {
 	}
 	target := user
 	if !strings.Contains(target, "@") {
-		target = user + "@" + types.DefaultUserServer
+		// Dieselbe LID-Falle wie beim Senden: Einzelchats kommen als LID
+		// herein, und <LID>@s.whatsapp.net gibt es nicht. Erst aufloesen.
+		if nummer := telefonnummerFuerLID(user); nummer != "" {
+			target = nummer + "@" + types.DefaultUserServer
+		} else {
+			target = user + "@" + types.DefaultUserServer
+		}
 	}
+	fmt.Printf("📞 rufe %s an\n", target)
 	call, err := callClient.Call(ctx, target)
 	if err != nil {
 		return nil, err
