@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,7 +30,6 @@ import (
 	"image/jpeg"
 	_ "image/png"
 
-	_ "github.com/mutecomm/go-sqlcipher/v4"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/appstate"
 	"go.mau.fi/whatsmeow/proto/waCommon"
@@ -927,18 +925,10 @@ func initPaths() {
 	os.MkdirAll(avatarsDir, 0755)
 }
 
-func getDBConnectionString() string {
-	if encryptionKey == nil || len(encryptionKey) == 0 {
-		return "file:wa.db?_foreign_keys=on"
-	}
-	keyHex := hex.EncodeToString(encryptionKey)
-	return fmt.Sprintf("file:wa.db?_foreign_keys=on&_pragma_key=x'%s'&_pragma_cipher_page_size=4096", keyHex)
-}
-
 func initDatabase() error {
 	dbLog := waLog.Stdout("DB", "ERROR", true)
 	var err error
-	container, err = sqlstore.New(ctx, "sqlite3", getDBConnectionString(), dbLog)
+	container, err = sqlstore.New(ctx, dbDriverName, getDBConnectionString(), dbLog)
 	if err != nil {
 		return fmt.Errorf("database error: %v", err)
 	}
@@ -3087,7 +3077,7 @@ func main() {
 		f.Close()
 		legacyPlaintextDB = n >= 16 && bytes.HasPrefix(hdr, []byte("SQLite format 3\x00"))
 	}
-	if legacyPlaintextDB {
+	if legacyPlaintextDB && enforceEncryptedDB {
 		haltWithState("relogin_required",
 			"Your local database was created without Sailfish Secrets and is stored "+
 				"UNENCRYPTED. To protect your messages, this app now requires Sailfish "+

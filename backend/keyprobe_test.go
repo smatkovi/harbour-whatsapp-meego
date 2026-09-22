@@ -1,3 +1,8 @@
+//go:build !meego
+
+// Prueft die Schluesselerprobung aus secrets.go. Die gibt es nur auf
+// Sailfish -- auf MeeGo liegt der Schluessel in einer Datei, es gibt
+// keine konkurrierenden Sammlungen und nichts zu erproben.
 package main
 
 import (

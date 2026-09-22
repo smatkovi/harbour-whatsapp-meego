@@ -1,3 +1,5 @@
+//go:build cgo
+
 // Package speexdsp wraps the echo canceller and preprocessor of Xiph's
 // speexdsp (BSD licence, vendored here - see LICENSE) for the voice call
 // path. Built with cgo like SQLCipher, so the static three-arch build is
