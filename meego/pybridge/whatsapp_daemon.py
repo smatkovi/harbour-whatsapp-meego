@@ -317,11 +317,22 @@ class Daemon(object):
             return {'error': 'chat_id fehlt'}
         # Der Manager kennt Chats ueber den Anzeigenamen; kommt einer statt
         # einer Kennung herein, wird er zurueckuebersetzt.
+        #
+        # Namen sind nicht eindeutig -- es kann eine Gruppe und einen
+        # Kontakt gleichen Namens geben. Den ersten Treffer zu nehmen hiesse,
+        # eine private Nachricht an eine Gruppe schicken zu koennen. Bei
+        # Mehrdeutigkeit gewinnt deshalb der Einzelchat, und es wird
+        # vermerkt: lieber an die falsche Person als an alle.
         if not jid.replace('-', '').isdigit():
-            for k, v in self.titel.items():
-                if v == jid:
-                    jid = k
-                    break
+            treffer = [k for k, v in self.titel.items() if v == jid]
+            if len(treffer) > 1:
+                log('Name "%s" passt auf %d Chats: %s' % (jid, len(treffer), treffer))
+                einzel = [k for k in treffer if '-' not in k and len(k) <= 15]
+                treffer = einzel or sorted(treffer)
+            if treffer:
+                jid = treffer[0]
+            else:
+                return {'error': 'kein Chat namens %s' % jid}
         if not self.backend.senden(jid, text):
             return {'error': 'Backend hat die Nachricht nicht angenommen'}
         # Die eigene Nachricht gilt sofort als gesehen, sonst kaeme sie beim

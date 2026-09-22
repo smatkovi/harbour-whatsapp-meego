@@ -3,13 +3,13 @@
 set -e
 
 # Die Konten zuerst -- danach ist mc-tool vielleicht schon ohne Gegenstelle.
-if [ -x /opt/pywhatsapp/whatsapp-setup ]; then
-    if [ -x /sbin/start-stop-daemon ]; then
-        /sbin/start-stop-daemon --start --chuid user \
-            --exec /opt/pywhatsapp/whatsapp-setup -- remove || true
-    else
-        /opt/pywhatsapp/whatsapp-setup remove || true
-    fi
+# Die Konten entfernen. Das geht hier nur, wenn dpkg von Hand als root
+# aufgerufen wurde -- unter Aegis scheitert der Kennungswechsel, und dann
+# bleiben die Konten stehen. Sie richten keinen Schaden an: ohne Backend
+# bleibt das Nachrichtenkonto schlicht offline.
+if [ -x /opt/pywhatsapp/whatsapp-setup ] && [ -x /sbin/start-stop-daemon ]; then
+    /sbin/start-stop-daemon --start --chuid user \
+        --exec /opt/pywhatsapp/whatsapp-setup -- remove >/dev/null 2>&1 || true
 fi
 
 # Backend sauber beenden (siehe postinst: der Job kann das nicht).

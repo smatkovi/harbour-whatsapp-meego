@@ -19,6 +19,7 @@
 #include <QVariantList>
 #include <QUrl>
 #include <QVariantMap>
+#include <QTime>
 
 class QNetworkAccessManager;
 class QNetworkReply;
@@ -179,6 +180,7 @@ private:
 
     QTimer *m_anrufTakt;
     QNetworkReply *m_anrufAbfrage;   // hoechstens eine offen
+    QTime m_anrufAbfrageSeit;        // ... aber nicht fuer immer
     bool m_anrufAktiv;
     QString m_anrufName;
     QString m_anrufPhase;

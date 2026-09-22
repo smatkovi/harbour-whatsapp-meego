@@ -49,26 +49,33 @@ if [ "$ANGEPASST" = "1" ]; then
     sleep 4
 fi
 
-# --- 4) Konten anlegen ------------------------------------------------------
-# Als "user" und nicht als root: mc-tool und ag-tool schreiben in das
-# Kontoverzeichnis der Sitzung. "su" geht hier nicht -- Aegis laesst root
-# die Gruppen nicht wechseln ("can't set groups: Operation not permitted").
-# start-stop-daemon --chuid kann es.
-if [ -x /opt/pywhatsapp/whatsapp-setup ]; then
-    if [ -x /sbin/start-stop-daemon ]; then
-        /sbin/start-stop-daemon --start --chuid user \
-            --exec /opt/pywhatsapp/whatsapp-setup -- add || true
-    else
-        /opt/pywhatsapp/whatsapp-setup add || true
-    fi
-fi
+# --- 4) Konten: hier nicht ---------------------------------------------------
+# Die beiden Konten (pybridge fuer die Nachrichten-App, SIP fuer Anrufe)
+# legt die App beim Start an, nicht dieses Skript. Der Grund ist Aegis: von
+# hier aus laeuft alles als root, mc-tool und ag-tool schreiben aber in die
+# Kontoverzeichnisse der Sitzung, und jeder Weg zum Kennungswechsel ist
+# versperrt -- "su: can't set groups: Operation not permitted" ebenso wie
+# "start-stop-daemon: unable to set gid to 29999". Die App dagegen laeuft
+# ohnehin als "user" und hat den Sitzungsbus.
 
-# --- 5) Den Anstossjob starten ----------------------------------------------
-# Fehlschlag ist kein Grund, die Installation scheitern zu lassen: beim
-# Einrichten ohne laufende Sitzung gibt es schlicht nichts anzustossen.
-if [ -x /sbin/initctl ]; then
-    /sbin/initctl stop  apps/harbour-whatsapp >/dev/null 2>&1 || true
-    /sbin/initctl start apps/harbour-whatsapp >/dev/null 2>&1 || true
+# --- 5) Das Backend wieder hochziehen ----------------------------------------
+# Nicht ueber initctl: aus dem dpkg-Kontext scheitert das ebenso still wie
+# der Kennungswechsel, und dann steht das Backend bis zum naechsten
+# Anmelden. Beim Upgrade auf 1.5 war es genau so -- die App meldete
+# "connection refused".
+#
+# Der Weg, der geht, ist derselbe, den der Anstossjob nimmt: ein nackter
+# root kommt an den Sitzungs-D-Bus heran, und ein darueber aktivierter
+# Dienst laeuft als Besitzer des Busses, also als "user". --print-reply ist
+# Pflicht, sonst kehrt der Aufruf zurueck, bevor D-Bus die Aktivierung
+# bearbeitet hat.
+BUS=$(sed -n 's/.*DBUS_SESSION_BUS_ADDRESS=//p' /tmp/session_bus_address.user 2>/dev/null \
+      | tr -d '";' | head -1)
+if [ -n "$BUS" ]; then
+    DBUS_SESSION_BUS_ADDRESS="$BUS" dbus-send --session --print-reply \
+        --dest=org.freedesktop.DBus /org/freedesktop/DBus \
+        org.freedesktop.DBus.StartServiceByName \
+        string:org.smatkovi.WhatsApp uint32:0 >/dev/null 2>&1 || true
 fi
 
 exit 0

@@ -754,9 +754,22 @@ void Backend::anhangFertig()
 
 void Backend::anrufAbfragen()
 {
-    if (m_anrufAbfrage)
-        return;
+    if (m_anrufAbfrage) {
+        // Hoechstens eine Abfrage offen -- aber nicht endlos. Qt 4.7 kennt
+        // keine Zeitgrenze fuer Netzanfragen: bleibt eine haengen, kommt
+        // finished() nie, m_anrufAbfrage bleibt belegt, und die
+        // Anrufansicht steht fuer den Rest des Gespraechs auf dem zuletzt
+        // gesehenen Zustand. Im Feld sah das so aus, dass "verbindet ..."
+        // stehenblieb, obwohl das Backend laengst auf "active" war und die
+        // Gegenseite zu hoeren war.
+        if (m_anrufAbfrageSeit.isValid() && m_anrufAbfrageSeit.elapsed() < 8000)
+            return;
+        QNetworkReply *alt = m_anrufAbfrage;
+        m_anrufAbfrage = 0;
+        alt->abort();   // finished() raeumt auf, der Vergleich dort faellt aus
+    }
     m_anrufAbfrage = hole(QLatin1String("/call/state"));
+    m_anrufAbfrageSeit.start();
     connect(m_anrufAbfrage, SIGNAL(finished()), this, SLOT(anrufZustandFertig()));
 }
 
