@@ -59,6 +59,18 @@ public:
     Q_INVOKABLE void senden(const QString &jid, const QString &text);
     Q_INVOKABLE void neuLaden();
     Q_INVOKABLE QString zeit(const QVariant &wert) const;
+    // Holt den Anhang einer Nachricht aufs Geraet. Bilder und Dokumente
+    // liegen erst nach dem Abruf lokal -- auf 2G will man das nicht
+    // automatisch fuer jeden Verlauf tun.
+    Q_INVOKABLE void medienLaden(const QString &nachrichtenId);
+    Q_INVOKABLE void oeffnen(const QString &pfad);
+    Q_INVOKABLE QString groesse(const QVariant &bytes) const;
+    // Dateiwaehler: Harmattan bringt keinen mit, den eine fremde App
+    // aufrufen koennte, also listet die App selbst.
+    Q_INVOKABLE QString startVerzeichnis() const;
+    Q_INVOKABLE QVariantList verzeichnis(const QString &pfad) const;
+    Q_INVOKABLE void anhangSenden(const QString &jid, const QString &pfad,
+                                  const QString &beschriftung);
 
 signals:
     void statusChanged();
@@ -71,16 +83,21 @@ private slots:
     void chatsFertig();
     void nachrichtenFertig();
     void sendenFertig();
+    void medienFertig();
+    void anhangFertig();
     void ereignisFertig();
     void kopplungFertig();
     void abfragen();
 
 private:
     QNetworkReply *hole(const QString &pfad);
+    void ereignisPoll();
     void setzeFehler(const QString &text);
     int port();
 
     QNetworkAccessManager *m_netz;
+    // Genau ein Long-Poll darf offen sein, siehe ereignisPoll().
+    QNetworkReply *m_ereignis;
     QProcess *m_dienst;
     QTimer *m_takt;
     QString m_binary;

@@ -66,13 +66,25 @@ Page {
                     font.pixelSize: inhalt.font.pixelSize
                 }
 
+                // Anhaenge: "image", "video", "document", "audio", "sticker".
+                property bool hatAnhang: modelData.mediaType !== undefined
+                                         && modelData.mediaType !== ""
+                property bool istBild: modelData.mediaType === "image"
+                                       || modelData.mediaType === "sticker"
+                property bool geladen: modelData.localPath !== undefined
+                                       && modelData.localPath !== ""
+
                 Column {
                     id: spalte
                     x: 12
                     y: 8
-                    width: Math.max(60, Math.min(verlauf.maxBlase - 24,
-                                                 messer.paintedWidth))
-                    spacing: 2
+                    // Mit Anhang lohnt die Rechnerei nach Textbreite nicht --
+                    // Bild und Dateizeile wollen ohnehin die volle Breite.
+                    width: blase.hatAnhang
+                           ? verlauf.maxBlase - 24
+                           : Math.max(60, Math.min(verlauf.maxBlase - 24,
+                                                   messer.paintedWidth))
+                    spacing: 4
 
                     // In Gruppen ist ohne Absender nicht zu erkennen, wer
                     // spricht; im Einzelchat waere es nur Laerm.
@@ -88,9 +100,127 @@ Page {
                         elide: Text.ElideRight
                         maximumLineCount: 1
                     }
+                    // --- Bild ---------------------------------------
+                    Item {
+                        width: parent.width
+                        visible: blase.istBild
+                        height: visible ? (blase.geladen ? bild.height : 96) : 0
+
+                        Image {
+                            id: bild
+                            width: parent.width
+                            fillMode: Image.PreserveAspectFit
+                            // sourceSize kommt aus der Datei und haengt nicht
+                            // an width -- keine Bindungsschleife.
+                            height: (status === Image.Ready && sourceSize.width > 0)
+                                    ? width * sourceSize.height / sourceSize.width
+                                    : 0
+                            source: blase.geladen ? "file://" + modelData.localPath : ""
+                            asynchronous: true
+                            smooth: true
+                            MouseArea {
+                                anchors.fill: parent
+                                enabled: blase.geladen
+                                onClicked: Dienst.oeffnen(modelData.localPath)
+                            }
+                        }
+
+                        Rectangle {
+                            anchors.fill: parent
+                            visible: !blase.geladen
+                            color: "#2a2a2a"
+                            radius: 6
+                            Column {
+                                anchors.centerIn: parent
+                                spacing: 2
+                                Label {
+                                    text: "Bild laden"
+                                    font.pixelSize: 20
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                }
+                                Label {
+                                    text: Dienst.groesse(modelData.fileSize)
+                                    color: "#909090"
+                                    font.pixelSize: 16
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                }
+                            }
+                            MouseArea {
+                                anchors.fill: parent
+                                onClicked: Dienst.medienLaden(modelData.id)
+                            }
+                        }
+                    }
+
+                    // --- Dokument, Video, Ton -----------------------------
+                    Rectangle {
+                        width: parent.width
+                        visible: blase.hatAnhang && !blase.istBild
+                        height: visible ? 62 : 0
+                        color: "#2a2a2a"
+                        radius: 6
+
+                        Row {
+                            anchors.left: parent.left
+                            anchors.leftMargin: 10
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.right: parent.right
+                            anchors.rightMargin: 10
+                            spacing: 10
+
+                            Rectangle {
+                                width: 40; height: 40; radius: 4
+                                anchors.verticalCenter: parent.verticalCenter
+                                color: "#3a5a7a"
+                                Label {
+                                    anchors.centerIn: parent
+                                    font.pixelSize: 15
+                                    font.bold: true
+                                    // Die Endung sagt mehr als ein Symbol,
+                                    // das es auf diesem Geraet nicht gibt.
+                                    text: {
+                                        var n = modelData.fileName || ""
+                                        var i = n.lastIndexOf(".")
+                                        if (i > 0 && n.length - i <= 5)
+                                            return n.substring(i + 1).toUpperCase()
+                                        return (modelData.mediaType || "?").substring(0, 3).toUpperCase()
+                                    }
+                                }
+                            }
+
+                            Column {
+                                width: parent.width - 60
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 1
+                                Label {
+                                    width: parent.width
+                                    elide: Text.ElideMiddle
+                                    maximumLineCount: 1
+                                    font.pixelSize: 19
+                                    text: modelData.fileName || modelData.mediaType || "Datei"
+                                }
+                                Label {
+                                    color: "#909090"
+                                    font.pixelSize: 16
+                                    text: Dienst.groesse(modelData.fileSize)
+                                          + (blase.geladen ? " · antippen zum Öffnen"
+                                                           : " · antippen zum Laden")
+                                }
+                            }
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: blase.geladen ? Dienst.oeffnen(modelData.localPath)
+                                                     : Dienst.medienLaden(modelData.id)
+                        }
+                    }
+
                     Label {
                         id: inhalt
                         width: parent.width
+                        visible: text !== ""
+                        height: visible ? implicitHeight : 0
                         wrapMode: Text.Wrap
                         text: modelData.text || ""
                         font.pixelSize: 22
@@ -143,10 +273,20 @@ Page {
 
         Rectangle { anchors.fill: parent; color: "#101010" }
 
+        ToolIcon {
+            id: klammer
+            anchors.left: parent.left
+            anchors.leftMargin: 2
+            anchors.verticalCenter: parent.verticalCenter
+            platformIconId: "toolbar-attach"
+            onClicked: pageStack.push(Qt.resolvedUrl("FilesPage.qml"),
+                                      { jid: seite.jid })
+        }
+
         TextField {
             id: feld
-            anchors.left: parent.left
-            anchors.leftMargin: 8
+            anchors.left: klammer.right
+            anchors.leftMargin: 4
             anchors.right: sendeKnopf.left
             anchors.rightMargin: 8
             anchors.verticalCenter: parent.verticalCenter

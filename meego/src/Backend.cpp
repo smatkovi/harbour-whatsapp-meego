@@ -2,6 +2,9 @@
 #include "Json.h"
 
 #include <QDateTime>
+#include <QDesktopServices>
+#include <QFileInfo>
+#include <QFileInfoList>
 #include <QDir>
 #include <QFile>
 #include <QNetworkAccessManager>
@@ -30,6 +33,7 @@ QString datenVerzeichnis()
 Backend::Backend(const QString &binary, QObject *parent)
     : QObject(parent)
     , m_netz(new QNetworkAccessManager(this))
+    , m_ereignis(0)
     , m_dienst(0)
     , m_takt(new QTimer(this))
     , m_binary(binary)
@@ -93,6 +97,10 @@ void Backend::starten()
 
     if (!m_dienst && QFile::exists(m_binary)) {
         m_dienst = new QProcess(this);
+        // Ohne das faengt QProcess die Ausgabe des Backends ab und niemand
+        // sieht sie je -- das hat die Suche nach den fehlenden Kontakten
+        // unnoetig lange gekostet.
+        m_dienst->setProcessChannelMode(QProcess::ForwardedChannels);
         m_dienst->setWorkingDirectory(QDir::homePath());
         QStringList umgebung = QProcess::systemEnvironment();
         m_dienst->setEnvironment(umgebung);
@@ -147,9 +155,7 @@ void Backend::statusFertig()
     if (gekoppeltNeu) {
         if (frischGekoppelt || m_chats.isEmpty())
             neuLaden();
-        // Long-Poll aufsetzen: haengt bis sich etwas tut.
-        QNetworkReply *ev = hole(QString::fromLatin1("/events?since=%1").arg(m_seq));
-        connect(ev, SIGNAL(finished()), this, SLOT(ereignisFertig()));
+        ereignisPoll();
     }
 }
 
@@ -158,6 +164,8 @@ void Backend::ereignisFertig()
     QNetworkReply *r = qobject_cast<QNetworkReply *>(sender());
     if (!r)
         return;
+    if (r == m_ereignis)
+        m_ereignis = 0;
     r->deleteLater();
     if (r->error() != QNetworkReply::NoError)
         return;
@@ -167,9 +175,21 @@ void Backend::ereignisFertig()
         m_seq = seq;
         neuLaden();
     }
-    // Sofort wieder aufsetzen -- so bleibt immer genau ein Poll offen.
-    QNetworkReply *ev = hole(QString::fromLatin1("/events?since=%1").arg(m_seq));
-    connect(ev, SIGNAL(finished()), this, SLOT(ereignisFertig()));
+    ereignisPoll();
+}
+
+void Backend::ereignisPoll()
+{
+    // Hoechstens EIN offener Long-Poll. Vorher setzte jeder Statusabruf einen
+    // neuen auf, und der Takt laeuft alle 15 Sekunden -- bei bis zu 25
+    // Sekunden Haltezeit haeuften sie sich. Qt 4.7 erlaubt sechs gleichzeitige
+    // Verbindungen je Host; ab da standen alle anderen Anfragen in der
+    // Warteschlange, auch /messages. Der Verlauf blieb leer, ohne jede
+    // Fehlermeldung, und es wurde mit der Laufzeit schlimmer statt besser.
+    if (m_ereignis)
+        return;
+    m_ereignis = hole(QString::fromLatin1("/events?since=%1").arg(m_seq));
+    connect(m_ereignis, SIGNAL(finished()), this, SLOT(ereignisFertig()));
 }
 
 void Backend::neuLaden()
@@ -326,4 +346,132 @@ QString Backend::zeit(const QVariant &wert) const
     if (t.date() == QDate::currentDate())
         return t.toString(QLatin1String("HH:mm"));
     return t.toString(QLatin1String("d.M. HH:mm"));
+}
+
+void Backend::medienLaden(const QString &nachrichtenId)
+{
+    if (nachrichtenId.isEmpty())
+        return;
+    QNetworkReply *r = hole(QLatin1String("/download?id=")
+                            + QString::fromLatin1(QUrl::toPercentEncoding(nachrichtenId)));
+    connect(r, SIGNAL(finished()), this, SLOT(medienFertig()));
+}
+
+void Backend::medienFertig()
+{
+    QNetworkReply *r = qobject_cast<QNetworkReply *>(sender());
+    if (!r)
+        return;
+    r->deleteLater();
+    const QByteArray roh = r->readAll();
+    if (r->error() != QNetworkReply::NoError) {
+        setzeFehler(QString::fromUtf8(roh).trimmed());
+        return;
+    }
+    // Die Antwort ist {"path": "..."}. Den Pfad selbst braucht hier niemand:
+    // er steht nach dem Abruf auch in der Nachricht, und ein Nachladen des
+    // Verlaufs bringt ihn in die Oberflaeche.
+    setzeFehler(QString());
+    if (!m_offenerChat.isEmpty())
+        chatOeffnen(m_offenerChat);
+}
+
+void Backend::oeffnen(const QString &pfad)
+{
+    if (pfad.isEmpty())
+        return;
+    // Harmattan reicht das ueber seinen MIME-Handler weiter -- Bilder an die
+    // Galerie, PDF an den Betrachter. Was es nicht kennt, bleibt eben liegen.
+    if (!QDesktopServices::openUrl(QUrl::fromLocalFile(pfad)))
+        setzeFehler(QString::fromUtf8("Fuer diese Datei gibt es kein Programm."));
+}
+
+QString Backend::groesse(const QVariant &bytes) const
+{
+    const qint64 n = bytes.toLongLong();
+    if (n <= 0)
+        return QString();
+    if (n < 1024)
+        return QString::number(n) + QLatin1String(" B");
+    if (n < 1024 * 1024)
+        return QString::number(n / 1024) + QLatin1String(" kB");
+    return QString::number(n / (1024.0 * 1024.0), 'f', 1) + QLatin1String(" MB");
+}
+
+QString Backend::startVerzeichnis() const
+{
+    // MyDocs ist die Partition, die auch der Dateimanager und der Rechner am
+    // USB-Kabel sehen -- dort liegt, was der Nutzer verschicken will.
+    const QString myDocs = QDir::homePath() + QLatin1String("/MyDocs");
+    return QDir(myDocs).exists() ? myDocs : QDir::homePath();
+}
+
+QVariantList Backend::verzeichnis(const QString &pfad) const
+{
+    QVariantList aus;
+    QDir d(pfad);
+    if (!d.exists())
+        return aus;
+
+    // Eine Stufe zurueck, ausser im Startverzeichnis.
+    if (QDir::cleanPath(pfad) != QDir::cleanPath(startVerzeichnis())) {
+        QVariantMap hoch;
+        hoch.insert(QLatin1String("name"), QString::fromUtf8(".."));
+        hoch.insert(QLatin1String("pfad"), QFileInfo(pfad).absolutePath());
+        hoch.insert(QLatin1String("istOrdner"), true);
+        hoch.insert(QLatin1String("bytes"), 0);
+        aus.append(hoch);
+    }
+
+    d.setFilter(QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot);
+    d.setSorting(QDir::DirsFirst | QDir::Name | QDir::IgnoreCase);
+    const QFileInfoList eintraege = d.entryInfoList();
+    for (int i = 0; i < eintraege.size(); ++i) {
+        const QFileInfo &f = eintraege.at(i);
+        if (f.fileName().startsWith(QLatin1Char('.')))
+            continue;                       // .thumbnails und Konsorten
+        QVariantMap m;
+        m.insert(QLatin1String("name"), f.fileName());
+        m.insert(QLatin1String("pfad"), f.absoluteFilePath());
+        m.insert(QLatin1String("istOrdner"), f.isDir());
+        m.insert(QLatin1String("bytes"), f.isDir() ? 0 : (qint64)f.size());
+        aus.append(m);
+    }
+    return aus;
+}
+
+void Backend::anhangSenden(const QString &jid, const QString &pfad,
+                           const QString &beschriftung)
+{
+    if (jid.isEmpty() || pfad.isEmpty())
+        return;
+    // Die einfache Form von /sendmedia nimmt einen lokalen Pfad. Multipart
+    // waere hier unsinnig: die Datei liegt schon auf demselben Geraet.
+    QString ziel = QLatin1String("/sendmedia?to=")
+            + QString::fromLatin1(QUrl::toPercentEncoding(jid))
+            + QLatin1String("&file=")
+            + QString::fromLatin1(QUrl::toPercentEncoding(pfad));
+    if (!beschriftung.isEmpty())
+        ziel += QLatin1String("&caption=")
+                + QString::fromLatin1(QUrl::toPercentEncoding(beschriftung));
+    QNetworkRequest r(QUrl(QString::fromLatin1("http://127.0.0.1:%1%2")
+                           .arg(const_cast<Backend *>(this)->port()).arg(ziel)));
+    QNetworkReply *rep = m_netz->post(r, QByteArray());
+    connect(rep, SIGNAL(finished()), this, SLOT(anhangFertig()));
+}
+
+void Backend::anhangFertig()
+{
+    QNetworkReply *r = qobject_cast<QNetworkReply *>(sender());
+    if (!r)
+        return;
+    r->deleteLater();
+    const QString antwort = QString::fromUtf8(r->readAll()).trimmed();
+    if (r->error() != QNetworkReply::NoError || antwort != QLatin1String("ok")) {
+        setzeFehler(antwort.isEmpty() ? r->errorString() : antwort);
+        return;
+    }
+    setzeFehler(QString());
+    if (!m_offenerChat.isEmpty())
+        chatOeffnen(m_offenerChat);
 }

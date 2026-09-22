@@ -26,6 +26,29 @@ const dbDriverName = "sqlite"
 // Hier ist die Klartext-Datenbank der Normalfall, kein Grund anzuhalten.
 const enforceEncryptedDB = false
 
+// Die Parameter sind nicht dieselben wie bei SQLCipher, und das ist keine
+// Kosmetik: "_foreign_keys=on" ist mattn-Syntax, modernc.org/sqlite kennt
+// nur "_pragma=...". Mit der uebernommenen Zeichenkette blieben die
+// Fremdschluessel also aus -- und vor allem fehlte jede Wartezeit bei
+// belegter Datenbank. whatsmeow schreibt den Verlauf, den App-State und die
+// Signal-Sitzungen gleichzeitig; ohne busy_timeout scheitert der Zweite
+// sofort mit SQLITE_BUSY. Auf dem N950 sah das so aus:
+//
+//     app state sync critical_block failed: ... database is locked (5)
+//     Error decrypting message ...: failed to load session: database is locked
+//
+// Die Nachricht war nicht verloren, nur unentschluesselbar - whatsmeow
+// schickt eine Wiederholungsquittung. Aber der Kontaktabgleich blieb leer.
+//
+// journal_mode(WAL) laesst Leser und Schreiber nebeneinander arbeiten,
+// busy_timeout gibt dem Zweiten zehn Sekunden statt sofort aufzugeben, und
+// _txlock=immediate nimmt die Schreibsperre gleich zu Beginn einer
+// Transaktion statt mittendrin - das vermeidet die Verklemmung zweier
+// Schreiber, die beide erst lesen.
 func getDBConnectionString() string {
-	return "file:wa.db?_foreign_keys=on"
+	return "file:wa.db?" +
+		"_pragma=busy_timeout(10000)" +
+		"&_pragma=journal_mode(WAL)" +
+		"&_pragma=foreign_keys(1)" +
+		"&_txlock=immediate"
 }

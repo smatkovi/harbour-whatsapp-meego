@@ -1231,21 +1231,81 @@ func loadContacts() {
 	}()
 }
 
+// lidCache haelt die Aufloesung LID -> Telefonnummer fest. getChats fragt
+// fuer jeden Chat, und /chats wird oft geholt -- ohne Cache waere das jedes
+// Mal ein Gang in den Store.
+var lidCache = map[string]string{}
+var lidCacheMutex sync.RWMutex
+
+// telefonnummerFuerLID loest eine LID in die Telefonnummer auf.
+//
+// WhatsApp adressiert Einzelchats inzwischen ueber LIDs -- 15-stellige
+// Kennungen, die mit der Rufnummer nichts zu tun haben. Der Kontaktspeicher
+// und die Avatare sind aber weiterhin nach Nummern abgelegt. Ohne diese
+// Uebersetzung bleiben deshalb ausgerechnet die Einzelchats namenlos und
+// ohne Bild, waehrend Gruppen richtig erscheinen: deren Kennung ist auf
+// beiden Seiten dieselbe. Auf einem Geraet gemessen: 658 Kontakte sahen wie
+// Nummern aus, aber nur 4 von 41 Chats -- kein einziger Treffer.
+func telefonnummerFuerLID(user string) string {
+	if client == nil || user == "" {
+		return ""
+	}
+	lidCacheMutex.RLock()
+	if pn, ok := lidCache[user]; ok {
+		lidCacheMutex.RUnlock()
+		return pn
+	}
+	lidCacheMutex.RUnlock()
+
+	lid := types.JID{User: user, Server: types.HiddenUserServer}
+	pn, err := client.Store.LIDs.GetPNForLID(ctx, lid)
+	nummer := ""
+	if err == nil && !pn.IsEmpty() {
+		nummer = pn.ToNonAD().User
+	}
+	lidCacheMutex.Lock()
+	lidCache[user] = nummer      // auch das leere Ergebnis merken
+	lidCacheMutex.Unlock()
+	return nummer
+}
+
 func getContactName(jid string) string {
 	if jid == "status" {
 		return "Status updates"
 	}
 	contactsMutex.RLock()
-	defer contactsMutex.RUnlock()
-	if name, ok := contacts[jid]; ok {
+	name, ok := contacts[jid]
+	contactsMutex.RUnlock()
+	if ok {
 		return name
+	}
+	// Kein Treffer: vielleicht ist es eine LID.
+	if nummer := telefonnummerFuerLID(jid); nummer != "" {
+		contactsMutex.RLock()
+		name, ok = contacts[nummer]
+		contactsMutex.RUnlock()
+		if ok {
+			return name
+		}
 	}
 	return ""
 }
 
 func getAvatar(jid string) string {
+	if p := avatarPfad(jid); p != "" {
+		return p
+	}
+	// Wie beim Namen: Einzelchats kommen als LID herein, die Avatare liegen
+	// unter der Telefonnummer.
+	if nummer := telefonnummerFuerLID(jid); nummer != "" {
+		return avatarPfad(nummer)
+	}
+	return ""
+}
+
+func avatarPfad(schluessel string) string {
 	avatarsMutex.RLock()
-	path, ok := avatars[jid]
+	path, ok := avatars[schluessel]
 	avatarsMutex.RUnlock()
 	if ok {
 		if _, err := os.Stat(path); err == nil {
