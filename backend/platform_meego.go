@@ -19,8 +19,11 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/godbus/dbus/v5"
@@ -341,5 +344,50 @@ func plattformMeldungSchliessen(id uint32) bool {
 	}
 	_ = obj.Call("com.meego.core.MNotificationManager.removeNotification", 0,
 		kennung, id).Err
+	return true
+}
+
+// --- Anrufzustand fuer MCE ----------------------------------------------
+//
+// req_call_state_change verweigert der Bus unsignierten Paketen: das Recht
+// heisst mce::CallStateControl, und Aegis vergibt es hier nicht -- auch im
+// Open Mode nicht, aegis-exec -a laesst die Rechteliste unveraendert.
+//
+// mcetool hat es, weil es als root laeuft. Und MCE bindet den Zustand an
+// die Verbindung dessen, der ihn setzt: ein mcetool, das sich sofort
+// beendet, aendert nichts. Deshalb wird eines mit --block gehalten,
+// solange der Anruf dauert, und beim Ende beendet.
+var mceHalter *exec.Cmd
+var mceMu sync.Mutex
+
+func plattformAnrufZustand(zustand string) bool {
+	mceMu.Lock()
+	defer mceMu.Unlock()
+
+	// Den bisherigen Halter loslassen -- ein zweiter waere ein zweiter
+	// Anspruch auf denselben Zustand.
+	if mceHalter != nil && mceHalter.Process != nil {
+		_ = mceHalter.Process.Kill()
+		go func(c *exec.Cmd) { _ = c.Wait() }(mceHalter)
+		mceHalter = nil
+	}
+	if zustand == "none" || zustand == "" {
+		return true
+	}
+
+	befehl := exec.Command("sudo", "mcetool",
+		"--set-call-state="+zustand+":normal", "--block")
+	// Der Halter muss mit uns sterben. Ueberlebt er einen Absturz, glaubt
+	// das Telefon fuer immer, es klingle -- der Bildschirm bliebe an, die
+	// Tastensperre aus, und kein echter Anruf kaeme mehr richtig durch.
+	// Pdeathsig sorgt dafuer, dass der Kern ihn mitnimmt.
+	befehl.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
+	if err := befehl.Start(); err != nil {
+		fmt.Printf("📞 mcetool nicht startbar (%v)\n", err)
+		return false
+	}
+	mceHalter = befehl
+	fmt.Printf("📞 MCE-Anrufzustand %q wird gehalten (pid %d)\n",
+		zustand, befehl.Process.Pid)
 	return true
 }

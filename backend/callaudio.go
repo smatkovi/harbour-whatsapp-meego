@@ -314,6 +314,14 @@ func openCallAudio(managed bool) (*callAudio, error) {
 			a.setPort(a.earpiecePort)
 		}
 	}
+	// Dem Codec Zeit lassen, bevor die Stroeme aufgehen.
+	//
+	// Auf der Werkbank mit 200 ms Pause lieferte das Mikrofon an der
+	// Hoermuschel 0,094; im Gespraech, wo die Stroeme sofort nach dem
+	// Portwechsel aufgingen, waren es 0,001. Derselbe Port, derselbe
+	// Codec -- nur die Wartezeit fehlte. Beim Lautsprecher-Schalter hatte
+	// ich sie schon vorgesehen, beim Aufbau nicht.
+	time.Sleep(250 * time.Millisecond)
 
 	recOpts := []pulse.RecordOption{
 		pulse.RecordSampleRate(meowcaller.SampleRate),
@@ -1093,7 +1101,7 @@ func audioDevices() (map[string]interface{}, error) {
 // mikrofonProbe oeffnet kurz einen Aufnahmestrom und meldet den lautesten
 // Ausschlag. Ohne so eine Messung bleibt "das Mikrofon ist stumm" eine
 // Behauptung, die sich nur in einem echten Gespraech pruefen liesse.
-func mikrofonProbe(dauer time.Duration) (float32, uint64, string, error) {
+func mikrofonProbe(dauer time.Duration, mitWiedergabe bool, port string) (float32, uint64, string, error) {
 	opts := []pulse.ClientOption{
 		pulse.ClientApplicationName("harbour-whatsapp"),
 		pulse.ClientTimeout(5 * time.Second),
@@ -1108,6 +1116,15 @@ func mikrofonProbe(dauer time.Duration) (float32, uint64, string, error) {
 	defer pc.Close()
 
 	a := &callAudio{pc: pc}
+	a.discoverSink()
+	// Den Ausgangsweg vor allem anderen setzen -- die Reihenfolge ist auf
+	// diesem Codec entscheidend.
+	if port != "" && a.sinkName != "" {
+		_ = pc.RawRequest(&proto.SetSinkPort{
+			SinkIndex: proto.Undefined, SinkName: a.sinkName, Port: port,
+		}, nil)
+		time.Sleep(200 * time.Millisecond)
+	}
 	var spitze float32
 	var samples uint64
 	var mu sync.Mutex
@@ -1136,10 +1153,44 @@ func mikrofonProbe(dauer time.Duration) (float32, uint64, string, error) {
 	if err != nil {
 		return 0, 0, quelle, err
 	}
+
+	// Im Gespraech liegt neben der Aufnahme immer eine Wiedergabe. Der
+	// Verdacht ist, dass gerade deren Eroeffnung auf der Hoermuschel den
+	// Codec so umstellt, dass die Aufnahme verstummt -- gemessen wurden
+	// im Gespraech 0,001, ohne Wiedergabe 0,097. Mit ?play=1 laeuft sie
+	// hier mit.
+	var play *pulse.PlaybackStream
+	if mitWiedergabe {
+		playOpts := []pulse.PlaybackOption{
+			pulse.PlaybackSampleRate(meowcaller.SampleRate),
+			pulse.PlaybackChannels(proto.ChannelMap{proto.ChannelMono}),
+			pulse.PlaybackLatency(0.08),
+			pulse.PlaybackMediaName("Mikrofonprobe"),
+		}
+		if a.sinkName != "" {
+			if sink, serr := pc.SinkByID(a.sinkName); serr == nil {
+				playOpts = append(playOpts, pulse.PlaybackSink(sink))
+			}
+		}
+		play, _ = pc.NewPlayback(pulse.Float32Reader(func(out []float32) (int, error) {
+			for i := range out {
+				out[i] = 0
+			}
+			return len(out), nil
+		}), playOpts...)
+	}
+
 	rec.Start()
+	if play != nil {
+		play.Start()
+	}
 	time.Sleep(dauer)
 	rec.Stop()
 	rec.Close()
+	if play != nil {
+		play.Stop()
+		play.Close()
+	}
 
 	mu.Lock()
 	defer mu.Unlock()

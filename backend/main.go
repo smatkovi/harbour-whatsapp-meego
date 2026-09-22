@@ -3071,6 +3071,9 @@ func main() {
 	})
 
 	http.HandleFunc("/quit", func(w http.ResponseWriter, r *http.Request) {
+		// Den Anrufzustand loslassen, bevor wir gehen: ein gehaltenes
+		// "ringing" ohne jemanden, der es beendet, laehmt das Telefon.
+		mceCallState("none")
 		fmt.Println("👋 Quit requested (update?), saving and exiting...")
 		saveMessages()
 		saveContacts()
@@ -3158,7 +3161,9 @@ func main() {
 				"peakBefore": vor, "peakAfter": nach})
 			return
 		}
-		spitze, samples, quelle, err := mikrofonProbe(2 * time.Second)
+		mitWiedergabe := r.URL.Query().Get("play") == "1"
+		spitze, samples, quelle, err := mikrofonProbe(
+			2*time.Second, mitWiedergabe, r.URL.Query().Get("sinkport"))
 		w.Header().Set("Content-Type", "application/json")
 		if err != nil {
 			w.WriteHeader(500)

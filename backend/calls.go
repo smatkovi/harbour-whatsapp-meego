@@ -810,6 +810,12 @@ func startCall(user string) (*callSession, error) {
 // proximity blanking during the call) - the same D-Bus call the phone
 // app makes, no sensor access needed on our side ----
 func mceCallState(state string) {
+	// Auf Harmattan verweigert der Bus diesen Aufruf unsignierten
+	// Paketen. Dort geht es ueber mcetool, das als root laeuft und das
+	// Recht mce::CallStateControl hat -- siehe platform_meego.go.
+	if plattformAnrufZustand(state) {
+		return
+	}
 	conn, err := dbus.SystemBus()
 	if err != nil {
 		return
@@ -978,6 +984,52 @@ func registerCallHandlers() {
 		}
 		writeCallJSON(w, map[string]interface{}{"ok": true})
 	})
+	// Laesst das Telefon klingeln, ohne dass ein Anruf dahinterstuende.
+	//
+	// Zur Fehlersuche: ob Harmattans Anrufansicht nach vorn kommt, liess
+	// sich sonst nur an einem echten Anruf pruefen -- und der wird nach
+	// wenigen Sekunden auf einem anderen Geraet angenommen, worauf wir
+	// abbrechen muessen. Damit blieb nie genug Zeit, um zu sehen, was die
+	// Ansicht eigentlich tut. Mit ?sekunden=N klingelt es so lange.
+	http.HandleFunc("/call/testring", func(w http.ResponseWriter, r *http.Request) {
+		sek := 0
+		fmt.Sscanf(r.URL.Query().Get("sekunden"), "%d", &sek)
+		if sek <= 0 || sek > 120 {
+			sek = 30
+		}
+		name := r.URL.Query().Get("name")
+		if name == "" {
+			name = "Testklingeln"
+		}
+		_, _, ok := sipAnruf(name, "000", func() {
+			fmt.Println("📞 Testklingeln: Telefon hat aufgelegt")
+		}, func() {
+			fmt.Println("📞 Testklingeln: beendet")
+		})
+		if !ok {
+			writeCallJSON(w, map[string]interface{}{
+				"error": "kein registriertes Telefon"})
+			return
+		}
+		// Den Anrufzustand mithalten -- ohne ihn zeigt Harmattans
+		// Anrufansicht nur die Statuszeile. Mit ?mce=0 laesst er sich
+		// weglassen, um beides zu vergleichen.
+		mitMce := r.URL.Query().Get("mce") != "0"
+		if mitMce {
+			mceCallState("ringing")
+		}
+		fmt.Printf("📞 Testklingeln fuer %d s (mce=%v)\n", sek, mitMce)
+		go func() {
+			time.Sleep(time.Duration(sek) * time.Second)
+			sipAuflegen()
+			if mitMce {
+				mceCallState("none")
+			}
+			fmt.Println("📞 Testklingeln abgebrochen")
+		}()
+		writeCallJSON(w, map[string]interface{}{"ok": true, "sekunden": sek})
+	})
+
 	http.HandleFunc("/call/accept", func(w http.ResponseWriter, r *http.Request) {
 		s := currentCall()
 		if s == nil {

@@ -69,3 +69,6 @@ func sipKontoAnstossen() {}
 func plattformKlingelmeldung(titel, name string) (uint32, bool) { return 0, false }
 
 func plattformMeldungSchliessen(id uint32) bool { return false }
+
+// Auf Sailfish geht der Anrufzustand direkt ueber den Bus.
+func plattformAnrufZustand(zustand string) bool { return false }
