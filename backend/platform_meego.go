@@ -17,6 +17,9 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -51,4 +54,17 @@ func getDBConnectionString() string {
 		"&_pragma=journal_mode(WAL)" +
 		"&_pragma=foreign_keys(1)" +
 		"&_txlock=immediate"
+}
+
+// medienWurzel: auf Harmattan liegen Bilder, Videos, Musik und Dokumente
+// unter MyDocs. Das ist die VFAT-Partition, die auch am USB-Kabel erscheint,
+// und der Tracker indiziert ausschliesslich sie -- ein Anhang unterhalb von
+// ~/Documents ist zwar heruntergeladen, aber fuer Galerie und Dokumente-App
+// unsichtbar.
+func medienWurzel(homeDir string) string {
+	myDocs := filepath.Join(homeDir, "MyDocs")
+	if st, err := os.Stat(myDocs); err == nil && st.IsDir() {
+		return myDocs
+	}
+	return homeDir
 }

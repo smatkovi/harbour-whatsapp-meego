@@ -380,10 +380,53 @@ void Backend::oeffnen(const QString &pfad)
 {
     if (pfad.isEmpty())
         return;
-    // Harmattan reicht das ueber seinen MIME-Handler weiter -- Bilder an die
-    // Galerie, PDF an den Betrachter. Was es nicht kennt, bleibt eben liegen.
-    if (!QDesktopServices::openUrl(QUrl::fromLocalFile(pfad)))
-        setzeFehler(QString::fromUtf8("Fuer diese Datei gibt es kein Programm."));
+    const QString ziel = nachMyDocs(pfad);
+    if (ziel.isEmpty())
+        return;
+
+    // Nicht QDesktopServices: dessen Qt-4.7-Fassung kennt Harmattans
+    // Zuordnung nicht und meldet trotzdem Erfolg. xdg-open gibt es auf dem
+    // Geraet und trifft den richtigen Betrachter.
+    if (!QProcess::startDetached(QLatin1String("/usr/bin/xdg-open"),
+                                 QStringList() << ziel)) {
+        setzeFehler(QString::fromUtf8("Die Datei laesst sich nicht oeffnen: ") + ziel);
+    }
+}
+
+QString Backend::nachMyDocs(const QString &pfad)
+{
+    QFileInfo quelle(pfad);
+    if (!quelle.exists()) {
+        setzeFehler(QString::fromUtf8("Die Datei ist nicht mehr da."));
+        return QString();
+    }
+
+    // Seit das Backend seine Medienwurzel plattformabhaengig waehlt, landen
+    // Anhaenge schon unter MyDocs -- dort, wo der Tracker sie findet und die
+    // Dokumente-App sie zeigt. Dann ist nichts zu tun.
+    const QString myDocs = QDir(QDir::homePath() + QLatin1String("/MyDocs")).absolutePath();
+    if (quelle.absoluteFilePath().startsWith(myDocs + QLatin1Char('/')))
+        return pfad;
+
+    // Rueckfall fuer Dateien, die eine aeltere Fassung noch nach ~/Documents
+    // geladen hat: eine Kopie nach MyDocs, sonst bleiben sie unsichtbar.
+    const QString ordner = QDir::homePath() + QLatin1String("/MyDocs/Downloads");
+    if (!QDir(ordner).exists() && !QDir().mkpath(ordner))
+        return pfad;                       // dann eben von dort, wo es liegt
+    if (quelle.absolutePath() == QDir(ordner).absolutePath())
+        return pfad;                       // schon dort
+
+    const QString ziel = ordner + QLatin1Char('/') + quelle.fileName();
+    if (QFile::exists(ziel)) {
+        if (QFileInfo(ziel).size() == quelle.size())
+            return ziel;                   // dieselbe Datei, nichts zu tun
+        QFile::remove(ziel);
+    }
+    if (!QFile::copy(pfad, ziel)) {
+        setzeFehler(QString::fromUtf8("Kopieren nach MyDocs/Downloads ging nicht."));
+        return pfad;
+    }
+    return ziel;
 }
 
 QString Backend::groesse(const QVariant &bytes) const

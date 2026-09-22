@@ -278,7 +278,7 @@ Page {
             anchors.left: parent.left
             anchors.leftMargin: 2
             anchors.verticalCenter: parent.verticalCenter
-            platformIconId: "toolbar-attach"
+            platformIconId: "toolbar-attachment"
             onClicked: pageStack.push(Qt.resolvedUrl("FilesPage.qml"),
                                       { jid: seite.jid })
         }

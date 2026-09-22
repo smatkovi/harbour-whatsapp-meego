@@ -92,6 +92,9 @@ private slots:
 private:
     QNetworkReply *hole(const QString &pfad);
     void ereignisPoll();
+    // Kopiert einen Anhang nach MyDocs/Downloads und gibt den
+    // dortigen Pfad zurueck -- nur dort findet ihn das Geraet.
+    QString nachMyDocs(const QString &pfad);
     void setzeFehler(const QString &text);
     int port();
 

@@ -899,11 +899,17 @@ func initPaths() {
 		}
 	}
 
-	picturesDir = filepath.Join(homeDir, "Pictures", "WhatsApp")
-	videosDir = filepath.Join(homeDir, "Videos", "WhatsApp")
-	audioDir = filepath.Join(homeDir, "Music", "WhatsApp")
-	documentsDir = filepath.Join(homeDir, "Documents", "WhatsApp")
-	avatarsDir = filepath.Join(homeDir, "Pictures", "WhatsApp", "avatars")
+	// medienWurzel ist plattformabhaengig: auf Harmattan liegen die
+	// Benutzerordner unter MyDocs, und nur was dort liegt, findet der
+	// Tracker -- also Galerie, Dokumente-App und der Rechner am USB-Kabel.
+	// Unter ~/Documents laed es zwar korrekt herunter, aber keine App des
+	// Geraets sieht es je.
+	medien := medienWurzel(homeDir)
+	picturesDir = filepath.Join(medien, "Pictures", "WhatsApp")
+	videosDir = filepath.Join(medien, "Videos", "WhatsApp")
+	audioDir = filepath.Join(medien, "Music", "WhatsApp")
+	documentsDir = filepath.Join(medien, "Documents", "WhatsApp")
+	avatarsDir = filepath.Join(medien, "Pictures", "WhatsApp", "avatars")
 
 	// Ohne UserDirs-Permission sind ~/Pictures etc. in der Sandbox
 	// unsichtbar - dann in den privaten Datenordner ausweichen
@@ -1267,6 +1273,25 @@ func telefonnummerFuerLID(user string) string {
 	lidCache[user] = nummer      // auch das leere Ergebnis merken
 	lidCacheMutex.Unlock()
 	return nummer
+}
+
+// zielJID baut aus einer Chat-Kennung die Adresse zum Senden.
+//
+// Die bisherige Regel war "laenger als 15 Stellen = Gruppe, sonst
+// Telefonnummer". LIDs haben aber genau 15 Stellen und landeten damit im
+// Telefonnummern-Zweig -- verschickt wurde an <LID>@s.whatsapp.net, was es
+// nicht gibt. WhatsApp antwortete mit "no id found for ...".
+//
+// Also erst nachsehen, ob sich die Kennung als LID aufloesen laesst; dann
+// geht die Nachricht an die echte Nummer, so wie bei jedem anderen Kontakt.
+func zielJID(to string) types.JID {
+	if len(to) > 15 {
+		return types.NewJID(to, "g.us")
+	}
+	if nummer := telefonnummerFuerLID(to); nummer != "" {
+		return types.NewJID(nummer, "s.whatsapp.net")
+	}
+	return types.NewJID(to, "s.whatsapp.net")
 }
 
 func getContactName(jid string) string {
@@ -2933,11 +2958,7 @@ func sendVoice(to string, filePath string, seconds uint32) error {
 		return err
 	}
 	var jid types.JID
-	if len(to) > 15 {
-		jid = types.NewJID(to, "g.us")
-	} else {
-		jid = types.NewJID(to, "s.whatsapp.net")
-	}
+	jid = zielJID(to)
 	uploaded, err := client.Upload(ctx, data, whatsmeow.MediaAudio)
 	if err != nil {
 		return fmt.Errorf("upload failed: %v", err)
@@ -3653,11 +3674,7 @@ func main() {
 			return
 		}
 		var jid types.JID
-		if len(to) > 15 {
-			jid = types.NewJID(to, "g.us")
-		} else {
-			jid = types.NewJID(to, "s.whatsapp.net")
-		}
+		jid = zielJID(to)
 		quoteID := r.URL.Query().Get("quoteId")
 		quoteSender := r.URL.Query().Get("quoteSender")
 		quoteText := r.URL.Query().Get("quoteText")
@@ -3794,11 +3811,7 @@ func main() {
 
 	sendLive := func(to string, lat, lon float64, seq int64, timeOffset uint32) (string, error) {
 		var jid types.JID
-		if len(to) > 15 {
-			jid = types.NewJID(to, "g.us")
-		} else {
-			jid = types.NewJID(to, "s.whatsapp.net")
-		}
+		jid = zielJID(to)
 		// Angleichung an offizielle Sender, damit Empfaenger-Clients die
 		// Updates in die bestehende Live-Blase kollabieren statt jedes als
 		// neue Nachricht zu zeigen: SequenceNumber = Unix-Millis (nicht
@@ -3924,11 +3937,7 @@ func main() {
 			return
 		}
 		var jid types.JID
-		if len(to) > 15 {
-			jid = types.NewJID(to, "g.us")
-		} else {
-			jid = types.NewJID(to, "s.whatsapp.net")
-		}
+		jid = zielJID(to)
 		loc := &waE2E.LocationMessage{
 			DegreesLatitude:  proto.Float64(lat),
 			DegreesLongitude: proto.Float64(lon),
@@ -3989,11 +3998,7 @@ func main() {
 			return
 		}
 		var jid types.JID
-		if len(to) > 15 {
-			jid = types.NewJID(to, "g.us")
-		} else {
-			jid = types.NewJID(to, "s.whatsapp.net")
-		}
+		jid = zielJID(to)
 		fwd := &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{
 			Text: proto.String(src.Text),
 			ContextInfo: &waE2E.ContextInfo{

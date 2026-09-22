@@ -28,3 +28,7 @@ func getDBConnectionString() string {
 	keyHex := hex.EncodeToString(encryptionKey)
 	return fmt.Sprintf("file:wa.db?_foreign_keys=on&_pragma_key=x'%s'&_pragma_cipher_page_size=4096", keyHex)
 }
+
+// medienWurzel: auf Sailfish sind ~/Pictures und Konsorten die richtigen
+// Orte, der Tracker kennt sie.
+func medienWurzel(homeDir string) string { return homeDir }
