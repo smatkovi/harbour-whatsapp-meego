@@ -96,9 +96,13 @@ Page {
                 id: bereich
                 anchors.fill: parent
                 onClicked: {
+                    if (modelData.pfad === "")
+                        return                     // die "weitere"-Zeile
                     if (modelData.istOrdner) {
+                        // Nur den Ordner setzen: die Bindung an model wertet
+                        // von selbst neu aus. Zusaetzlich zuzuweisen hiesse
+                        // jedes Mal doppelt einzulesen.
                         seite.ordner = modelData.pfad
-                        liste.model = Dienst.verzeichnis(seite.ordner)
                         liste.positionViewAtBeginning()
                     } else {
                         Dienst.anhangSenden(seite.jid, modelData.pfad, "")

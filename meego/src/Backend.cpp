@@ -487,8 +487,17 @@ QVariantList Backend::verzeichnis(const QString &pfad) const
 
     d.setFilter(QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot);
     d.setSorting(QDir::DirsFirst | QDir::Name | QDir::IgnoreCase);
+
+    // Begrenzt, und zwar aus einem handfesten Grund: MyDocs ist VFAT und
+    // kann Tausende Dateien enthalten. Jeder Eintrag kostet hier ein stat
+    // fuer Groesse und Typ, und das laeuft im Faden der Oberflaeche -- bei
+    // einem grossen Ordner steht das Geraet dann so lange, dass es sich
+    // aufgehaengt anfuehlt. Lieber die ersten paar hundert zeigen und es
+    // sagen, als die App einfrieren zu lassen.
+    const int grenze = 400;
     const QFileInfoList eintraege = d.entryInfoList();
-    for (int i = 0; i < eintraege.size(); ++i) {
+    int gezeigt = 0;
+    for (int i = 0; i < eintraege.size() && gezeigt < grenze; ++i) {
         const QFileInfo &f = eintraege.at(i);
         if (f.fileName().startsWith(QLatin1Char('.')))
             continue;                       // .thumbnails und Konsorten
@@ -498,6 +507,17 @@ QVariantList Backend::verzeichnis(const QString &pfad) const
         m.insert(QLatin1String("istOrdner"), f.isDir());
         m.insert(QLatin1String("bytes"), f.isDir() ? 0 : (qint64)f.size());
         aus.append(m);
+        ++gezeigt;
+    }
+    if (eintraege.size() > gezeigt) {
+        QVariantMap rest;
+        rest.insert(QLatin1String("name"),
+                    QString::fromUtf8("… %1 weitere, hier nicht gezeigt")
+                        .arg(eintraege.size() - gezeigt));
+        rest.insert(QLatin1String("pfad"), QString());
+        rest.insert(QLatin1String("istOrdner"), false);
+        rest.insert(QLatin1String("bytes"), 0);
+        aus.append(rest);
     }
     return aus;
 }
