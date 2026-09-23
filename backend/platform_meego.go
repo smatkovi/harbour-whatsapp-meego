@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -360,17 +361,82 @@ func plattformMeldungSchliessen(id uint32) bool {
 var mceHalter *exec.Cmd
 var mceMu sync.Mutex
 
+// Den Halter loslassen.
+//
+// Er laeuft ueber sudo als root, wir als user -- ein eigenes Kill trifft
+// ihn nicht, es scheitert mit EPERM. Genau daran ist ein Halter einmal
+// haengen geblieben: der Anruf war lange vorbei, das Telefon glaubte
+// weiter, es klingle, und mcetool drehte stundenlang mit einem Viertel
+// der Rechenzeit. Also ueber sudo toeten und nachsehen, ob es geholfen
+// hat.
+func mceLoslassen() {
+	if mceHalter == nil || mceHalter.Process == nil {
+		return
+	}
+	pid := mceHalter.Process.Pid
+	c := mceHalter
+	mceHalter = nil
+
+	_ = exec.Command("sudo", "kill", "-TERM", strconv.Itoa(pid)).Run()
+	go func() { _ = c.Wait() }()
+
+	// Nachsehen statt hoffen. Ein Halter, der uebrig bleibt, kostet mehr
+	// als ein zweites Signal.
+	for i := 0; i < 20; i++ {
+		if syscall.Kill(pid, 0) != nil {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+		if i == 9 {
+			_ = exec.Command("sudo", "kill", "-KILL", strconv.Itoa(pid)).Run()
+		}
+	}
+	fmt.Printf("📞 MCE-Halter %d ist nicht weggegangen\n", pid)
+}
+
+func init() {
+	// Beim Start, nicht beim ersten Anruf: ein haengender Halter kostet
+	// auch dann, wenn nie wieder jemand anruft.
+	go mceAufraeumen()
+}
+
+// Uebriggebliebene Halter aus einem frueheren Lauf.
+//
+// Ueberlebt einer einen Absturz, klingelt das Telefon fuer immer. Pdeathsig
+// faengt den Regelfall ab, aber nicht jeden -- beim Start wird deshalb
+// aufgeraeumt.
+func mceAufraeumen() {
+	eintraege, err := os.ReadDir("/proc")
+	if err != nil {
+		return
+	}
+	for _, e := range eintraege {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		roh, err := os.ReadFile("/proc/" + e.Name() + "/cmdline")
+		if err != nil {
+			continue
+		}
+		zeile := strings.ReplaceAll(string(roh), "\x00", " ")
+		if strings.Contains(zeile, "mcetool") &&
+			strings.Contains(zeile, "--set-call-state") {
+			fmt.Printf("📞 alter MCE-Halter %d wird beendet\n", pid)
+			_ = exec.Command("sudo", "kill", "-KILL", strconv.Itoa(pid)).Run()
+		}
+	}
+	// Und den Zustand selbst zuruecksetzen, falls er noch steht.
+	_ = exec.Command("sudo", "mcetool", "--set-call-state=none:normal").Run()
+}
+
 func plattformAnrufZustand(zustand string) bool {
 	mceMu.Lock()
 	defer mceMu.Unlock()
 
 	// Den bisherigen Halter loslassen -- ein zweiter waere ein zweiter
 	// Anspruch auf denselben Zustand.
-	if mceHalter != nil && mceHalter.Process != nil {
-		_ = mceHalter.Process.Kill()
-		go func(c *exec.Cmd) { _ = c.Wait() }(mceHalter)
-		mceHalter = nil
-	}
+	mceLoslassen()
 	if zustand == "none" || zustand == "" {
 		return true
 	}
@@ -389,5 +455,23 @@ func plattformAnrufZustand(zustand string) bool {
 	mceHalter = befehl
 	fmt.Printf("📞 MCE-Anrufzustand %q wird gehalten (pid %d)\n",
 		zustand, befehl.Process.Pid)
+
+	// Notbremse. "ringing" ist ein Zustand von Sekunden; bleibt er
+	// haengen, bleibt der Bildschirm an und die Tastensperre aus. Wer
+	// den Anruf annimmt oder auflegt, setzt vorher einen neuen Zustand
+	// und loest damit diesen Halter ohnehin ab -- der Wecker trifft nur
+	// den Fall, in dem das Ende nie gemeldet wird.
+	if zustand == "ringing" {
+		gehalten := befehl
+		go func() {
+			time.Sleep(90 * time.Second)
+			mceMu.Lock()
+			defer mceMu.Unlock()
+			if mceHalter == gehalten {
+				fmt.Println("📞 MCE-Halter laeuft seit 90 s, wird losgelassen")
+				mceLoslassen()
+			}
+		}()
+	}
 	return true
 }
