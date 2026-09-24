@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -1281,7 +1282,7 @@ func telefonnummerFuerLID(user string) string {
 		nummer = pn.ToNonAD().User
 	}
 	lidCacheMutex.Lock()
-	lidCache[user] = nummer      // auch das leere Ergebnis merken
+	lidCache[user] = nummer // auch das leere Ergebnis merken
 	lidCacheMutex.Unlock()
 	return nummer
 }
@@ -1398,13 +1399,78 @@ var (
 	evMu  sync.Mutex
 	evSeq int64 = 1
 	evCh        = make(chan struct{})
+	// Gebuendelt geweckt wird hoechstens alle evTakt -- siehe bumpEvent.
+	evGeplant bool
+	evZuletzt time.Time
+	// Wer weckt, und wie oft? Nur zur Fehlersuche, und nur wenn es viel
+	// wird.
+	evWoher    = map[string]int{}
+	evGemeldet time.Time
 )
 
+// So dicht darf die Oberflaeche geweckt werden. Vier Mal je Sekunde ist
+// mehr, als auf diesem Geraet sichtbar wird.
+const evTakt = 250 * time.Millisecond
+
+// bumpEvent zaehlt die Aenderung sofort mit, weckt die wartenden
+// /events-Abfragen aber hoechstens viermal je Sekunde.
+//
+// Vorher weckte jede einzelne Aenderung sofort. Im Leerlauf -- ohne
+// Gespraech, ohne Nachricht -- stieg der Zaehler um siebzehn je Sekunde,
+// und die Oberflaeche holte sich siebzehn Mal je Sekunde ihren Zustand:
+// gemessen 66 % des einen Kerns fuer die App und 37 % fuer das Backend,
+// Systemlast ueber sechs. In genau dieser Lage scheitert der Handschlag
+// zum Relais eines ausgehenden Anrufs nach zwoelf Sekunden -- waehrend
+// ein eingehender, bei dem die App gar nicht offen sein muss, in einer
+// Sekunde steht.
+//
+// Die Zaehlung bleibt genau: wer mit einem alten Stand fragt, bekommt
+// sofort den neuen. Gebuendelt wird nur das Wecken.
 func bumpEvent() {
+	jetzt := time.Now()
 	evMu.Lock()
 	evSeq++
-	close(evCh)
-	evCh = make(chan struct{})
+	if _, datei, zeile, ok := runtime.Caller(1); ok {
+		evWoher[fmt.Sprintf("%s:%d", filepath.Base(datei), zeile)]++
+	}
+	if jetzt.Sub(evGemeldet) >= 30*time.Second {
+		gesamt := 0
+		for _, n := range evWoher {
+			gesamt += n
+		}
+		// Nur melden, wenn es auffaellig viel ist: mehr als ein Wecken je
+		// Sekunde im Schnitt.
+		if !evGemeldet.IsZero() && gesamt > 30 {
+			spitze, oft := "", 0
+			for k, n := range evWoher {
+				if n > oft {
+					spitze, oft = k, n
+				}
+			}
+			fmt.Printf("🔔 %d Aenderungen in 30 s, die meisten aus %s (%d)\n",
+				gesamt, spitze, oft)
+		}
+		evGemeldet = jetzt
+		evWoher = map[string]int{}
+	}
+	if jetzt.Sub(evZuletzt) >= evTakt {
+		evZuletzt = jetzt
+		close(evCh)
+		evCh = make(chan struct{})
+		evMu.Unlock()
+		return
+	}
+	if !evGeplant {
+		evGeplant = true
+		time.AfterFunc(evTakt-jetzt.Sub(evZuletzt), func() {
+			evMu.Lock()
+			evGeplant = false
+			evZuletzt = time.Now()
+			close(evCh)
+			evCh = make(chan struct{})
+			evMu.Unlock()
+		})
+	}
 	evMu.Unlock()
 }
 
@@ -3603,10 +3669,44 @@ func main() {
 		}
 		cs := getChatSettings(chat)
 		chatSettingsMutex.Lock()
+		vorher := cs.LastOpened
 		cs.LastOpened = time.Now().Unix()
 		chatSettingsMutex.Unlock()
-		saveChatSettings()
 		clearNotification(chat)
+		// Gab es ueberhaupt etwas wegzuraeumen?
+		//
+		// Die Oberflaeche meldet das Oeffnen bei jeder Auffrischung, und
+		// jede Meldung weckte bisher die Oberflaeche, die daraufhin
+		// erneut auffrischte. Im Leerlauf drehte sich das siebzehn Mal je
+		// Sekunde -- jede Runde mit einem Schreibvorgang auf die Platte
+		// und einer Praesenz-Anfrage ans Netz. Gemessen: 66 % des einen
+		// Kerns fuer die App, 37 % fuers Backend, Systemlast ueber sechs.
+		// In dieser Lage bekommt ein ausgehender Anruf seine
+		// Medienverbindung nicht mehr auf, waehrend ein eingehender --
+		// bei dem die App gar nicht offen sein muss -- in einer Sekunde
+		// steht.
+		//
+		// Ungelesen ist, was nach dem letzten Oeffnen kam. Ist da nichts,
+		// aendert dieses Oeffnen nichts, und dann gibt es auch nichts zu
+		// melden.
+		neues := false
+		msgMutex.RLock()
+		for _, m := range messages {
+			j := m.ChatJID
+			if j == "" {
+				j = m.Sender
+			}
+			if j == chat && !m.FromMe && m.Timestamp > vorher {
+				neues = true
+				break
+			}
+		}
+		msgMutex.RUnlock()
+		if !neues {
+			w.Write([]byte("ok"))
+			return
+		}
+		saveChatSettings()
 		// Praesenz genau hier abonnieren: eine Anfrage bei einer bewussten
 		// Handlung statt hunderter im Hintergrund
 		go subscribePresence(chat)
