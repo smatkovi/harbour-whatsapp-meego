@@ -128,6 +128,28 @@ Im Backend hängt es an der Einstellung `call_dtx` (`/prefs/set?call_dtx=1`),
   Richtige DTX-Umsetzungen lassen die billigen Teile (Hochpass, Verlauf)
   weiterlaufen; das wäre der nächste Schritt, falls man es hört.
 
+## Komfortrauschen: die Gegenrichtung
+
+Mit `MLOW_CNG=1` füllt der Dekodierer einen inaktiven Rahmen mit leisem
+Rauschen statt mit lauter Nullen.
+
+WhatsApp hat DTX in seinen `voip_settings` stehen, schickt in
+Sprechpausen also selbst inaktive Rahmen. Bisher gab der Dekodierer dafür
+digitale Stille aus — und das klingt nicht nach einer Pause, sondern nach
+einer abgerissenen Leitung: zwischen zwei Wörtern verschwindet auch das
+Grundgeräusch des Raumes, das man die ganze Zeit gehört hat.
+
+Die Höhe des Rauschens schätzt der Dekodierer selbst, aus den leisesten
+Stellen der zuletzt dekodierten Sprache (Minimumstatistik: sofort herunter
+auf ein neues Minimum, 2,5 % je Rahmen wieder hinauf). Die inaktiven
+Rahmen tragen keine Angaben dazu — von ihnen wird nur das erste Byte
+gelesen. Weißes Rauschen klingt scharf, deshalb ein einpoliger Tiefpass;
+eingeblendet wird über den ersten Rahmen, sonst klickt der Übergang; und
+nach oben ist hart gedeckelt (−46 dBFS), lieber zu leise als ein Zischen
+über dem Gespräch.
+
+Im Backend an der Einstellung `call_cng`, standardmäßig aus.
+
 ## Was noch offen ist
 
 Die Grenze ist unterschritten, Reserve bleibt wenig: 12 % bei Sprache.

@@ -115,8 +115,8 @@ type callSession struct {
 	mu           sync.Mutex
 }
 
-// dtxSetzen schaltet die Sprechpausen-Ersparnis des Kodierers scharf,
-// wenn die Einstellung "call_dtx" auf 1 steht.
+// dtxSetzen schaltet die beiden Sprechpausen-Einstellungen scharf:
+// "call_dtx" fuer den Kodierer, "call_cng" fuer den Dekodierer.
 //
 // In einer Pause kostet ein Rahmen dann eine halbe statt einundvierzig
 // Millisekunden, und hinaus geht ein einziges Byte statt vierundzwanzig.
@@ -129,13 +129,25 @@ type callSession struct {
 // Umgebungsvariable einmal, beim ersten Rahmen eines Anrufs.
 func dtxSetzen() {
 	prefsMutex.RLock()
-	an := prefs["call_dtx"] == "1"
+	dtx := prefs["call_dtx"] == "1"
+	cng := prefs["call_cng"] == "1"
 	prefsMutex.RUnlock()
-	if an {
-		os.Setenv("MLOW_DTX", "1")
-	} else {
-		os.Unsetenv("MLOW_DTX")
+	setzen := func(name string, an bool) {
+		if an {
+			os.Setenv(name, "1")
+		} else {
+			os.Unsetenv(name)
+		}
 	}
+	setzen("MLOW_DTX", dtx)
+	// Und die Gegenrichtung: Komfortrauschen statt Totstille, wenn die
+	// Gegenseite in einer Sprechpause nichts schickt. WhatsApp hat DTX in
+	// seinen voip_settings stehen, schickt also selbst inaktive Rahmen --
+	// bisher gab der Dekodierer dafuer lauter Nullen aus, und zwischen
+	// zwei Woertern verschwand auch das Grundgeraeusch des anderen
+	// Raumes. Das klingt nicht nach Pause, sondern nach abgerissener
+	// Leitung.
+	setzen("MLOW_CNG", cng)
 }
 
 func initCalls() {

@@ -1,6 +1,6 @@
 diff -ruN meowcaller-rein/mlow/analysis.go meowcaller-fix/mlow/analysis.go
 --- a/mlow/analysis.go	2026-09-24 21:21:49.158710207 +0200
-+++ b/mlow/analysis.go	2026-09-24 22:34:07.670078484 +0200
++++ b/mlow/analysis.go	2026-09-24 22:37:23.592966780 +0200
 @@ -1,6 +1,10 @@
  package mlow
  
@@ -58,7 +58,7 @@ diff -ruN meowcaller-rein/mlow/analysis.go meowcaller-fix/mlow/analysis.go
  	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/ed12f359a086b28e807ba236f0977af1000859fe/wacore/src/voip/mlow/analysis.rs#L1065-L1105
 diff -ruN meowcaller-rein/mlow/celp_enc.go meowcaller-fix/mlow/celp_enc.go
 --- a/mlow/celp_enc.go	2026-09-24 21:21:49.158789638 +0200
-+++ b/mlow/celp_enc.go	2026-09-24 21:44:45.225014537 +0200
++++ b/mlow/celp_enc.go	2026-09-24 22:37:23.593073012 +0200
 @@ -97,9 +97,14 @@
  
  func celpDotProd(a, b []float32, l int) float32 {
@@ -207,9 +207,235 @@ diff -ruN meowcaller-rein/mlow/celp_enc.go meowcaller-fix/mlow/celp_enc.go
  	var sortIx [celpMaxNumsurv]int32
  	celpGetMaxiK(q, sortIx[:], fcbSubfrlen, numsurv)
  	for i := 0; i < numsurv; i++ {
+diff -ruN meowcaller-rein/mlow/cng_test.go meowcaller-fix/mlow/cng_test.go
+--- a/mlow/cng_test.go	1970-01-01 01:00:00.000000000 +0100
++++ b/mlow/cng_test.go	2026-09-24 23:08:59.359620388 +0200
+@@ -0,0 +1,75 @@
++package mlow
++
++import (
++	"math"
++	"testing"
++)
++
++func effektivwert(x []float32) float64 {
++	var s float64
++	for _, v := range x {
++		s += float64(v) * float64(v)
++	}
++	return math.Sqrt(s / float64(len(x)))
++}
++
++// Ohne Schalter bleibt ein inaktiver Rahmen digitale Stille; mit Schalter
++// kommt leises Rauschen heraus, und zwar hoechstens so laut wie die
++// leisesten Stellen der zuletzt gehoerten Sprache.
++func TestKomfortrauschen(t *testing.T) {
++	inaktiv := []byte{0x10} // 16 kHz, 60 ms, nicht aktiv
++
++	cngEinmal.Do(func() {})
++	cngWert = false
++	aus := NewMlowDecoder()
++	if e := effektivwert(aus.Decode(inaktiv)); e != 0 {
++		t.Fatalf("ohne Schalter kam Rauschen mit Effektivwert %v", e)
++	}
++
++	cngWert = true
++	defer func() { cngWert = false }()
++
++	// Ohne gehoerte Sprache weiss der Dekodierer den Pegel nicht -- dann
++	// bleibt es still, statt zu raten.
++	frisch := NewMlowDecoder()
++	if e := effektivwert(frisch.Decode(inaktiv)); e != 0 {
++		t.Fatalf("ohne Pegelkenntnis kam Rauschen mit Effektivwert %v", e)
++	}
++
++	// Pegel aus einem "gehoerten" Rahmen lernen.
++	d := NewMlowDecoder()
++	leise := make([]float32, 960)
++	for i := range leise {
++		leise[i] = 0.002 * float32(math.Sin(float64(i)*0.3))
++	}
++	d.pegelMerken(leise)
++
++	rahmen := d.Decode(inaktiv)
++	e := effektivwert(rahmen)
++	if e == 0 {
++		t.Fatal("mit Schalter und Pegel kam trotzdem Stille")
++	}
++	if e > cngHoechstpegel*3 {
++		t.Fatalf("Rauschen zu laut: Effektivwert %v, Deckel %v", e, cngHoechstpegel)
++	}
++	for i, v := range rahmen {
++		if math.IsNaN(float64(v)) || math.Abs(float64(v)) > 0.05 {
++			t.Fatalf("Stelle %d: %v", i, v)
++		}
++	}
++	// Eingeblendet: der Anfang ist leiser als das Ende.
++	if effektivwert(rahmen[:100]) >= effektivwert(rahmen[860:]) {
++		t.Fatal("das Rauschen wird nicht eingeblendet")
++	}
++
++	// Ein lauter Rahmen darf den Grundpegel nicht sofort mitreissen.
++	vorher := d.grundpegel
++	laut := make([]float32, 960)
++	for i := range laut {
++		laut[i] = 0.5
++	}
++	d.pegelMerken(laut)
++	if d.grundpegel > vorher*1.05 {
++		t.Fatalf("Grundpegel sprang von %v auf %v", vorher, d.grundpegel)
++	}
++}
+diff -ruN meowcaller-rein/mlow/decoder.go meowcaller-fix/mlow/decoder.go
+--- a/mlow/decoder.go	2026-09-24 21:21:49.158876883 +0200
++++ b/mlow/decoder.go	2026-09-24 23:08:36.202707749 +0200
+@@ -1,6 +1,12 @@
+ package mlow
+ 
+-import "github.com/rs/zerolog"
++import (
++	"math"
++	"os"
++	"sync"
++
++	"github.com/rs/zerolog"
++)
+ 
+ // MLow top-level decoder: RED strip → TOC routing → active-frame decode (3 chained
+ // 20 ms internal frames: LSF → pulses → pitch/gains → reconstruct → CELP synthesis)
+@@ -31,6 +37,13 @@
+ 	redundancy         int32
+ 	droppedUnsupported uint32
+ 	log                zerolog.Logger
++
++	// Komfortrauschen: siehe komfortRauschen.
++	grundpegel float32 // geschaetzter Grundgeraeuschpegel der Gegenseite
++	rauschSaat int32
++	rauschTief float32 // Zustand des einpoligen Tiefpasses
++	rauschAuf  float32 // Einblendung, 0..1
++	pegelKennt bool
+ }
+ 
+ // NewMlowDecoder allocates a fresh decoder.
+@@ -148,8 +161,8 @@
+ 		return make([]float32, outLen)
+ 	}
+ 	if toc.SID || !toc.Active {
+-		d.log.Trace().Bool("sid", toc.SID).Bool("active", toc.Active).Msg("decode frame: inactive/SID, emitting silence")
+-		return make([]float32, outLen)
++		d.log.Trace().Bool("sid", toc.SID).Bool("active", toc.Active).Msg("decode frame: inactive/SID")
++		return d.komfortRauschen(outLen)
+ 	}
+ 	if toc.SampleRate != 16000 || toc.FrameMs != 60 {
+ 		d.droppedUnsupported++
+@@ -164,7 +177,103 @@
+ 		}
+ 		return make([]float32, opusFrameSamps)
+ 	}
+-	return d.decodeActiveFrame(frame, outLen)
++	pcm := d.decodeActiveFrame(frame, outLen)
++	d.pegelMerken(pcm)
++	return pcm
++}
++
++// komfortRauschen fuellt einen inaktiven Rahmen mit leisem Rauschen statt
++// mit digitaler Stille.
++//
++// Die Gegenseite schickt in Sprechpausen inaktive Rahmen -- WhatsApp hat
++// DTX in den voip_settings stehen. Bisher gab der Dekodierer dafuer
++// lauter Nullen aus, und das klingt nicht wie eine Pause, sondern wie
++// eine abgerissene Leitung: zwischen zwei Woertern verschwindet auch das
++// Grundgeraeusch des anderen Raumes, das man die ganze Zeit gehoert hat.
++// Genau dagegen gibt es Komfortrauschen.
++//
++// Die Hoehe des Rauschens schaetzen wir selbst, aus den leisesten
++// Stellen der zuletzt dekodierten Sprache (Minimumstatistik: der Pegel
++// faellt sofort auf ein neues Minimum und steigt nur langsam wieder).
++// Die Rahmen der Gegenseite tragen keine Angaben dazu -- unser
++// Dekodierer liest von einem inaktiven Rahmen ueberhaupt nur das erste
++// Byte.
++//
++// Eingeblendet wird ueber den ersten Rahmen, sonst klickt es beim
++// Uebergang. Nach oben ist der Pegel hart gedeckelt: lieber zu leise als
++// ein Zischen ueber dem Gespraech.
++func (d *MlowDecoder) komfortRauschen(outLen int) []float32 {
++	out := make([]float32, outLen)
++	if !cngAn() || !d.pegelKennt {
++		d.rauschAuf = 0
++		return out
++	}
++	pegel := d.grundpegel
++	if pegel > cngHoechstpegel {
++		pegel = cngHoechstpegel
++	}
++	if pegel <= 0 {
++		return out
++	}
++	if d.rauschSaat == 0 {
++		d.rauschSaat = 12345
++	}
++	for i := range out {
++		d.rauschSaat = smplRand(d.rauschSaat)
++		// Gleichverteilt in [-1,1), dann ein einpoliger Tiefpass: weisses
++		// Rauschen klingt scharf, das Grundgeraeusch eines Raumes nicht.
++		weiss := float32(d.rauschSaat>>8) / 8388608.0
++		d.rauschTief = 0.8*d.rauschTief + 0.2*weiss
++		if d.rauschAuf < 1 {
++			d.rauschAuf += 1.0 / float32(outLen)
++		}
++		out[i] = d.rauschTief * pegel * 3.0 * d.rauschAuf
++	}
++	return out
++}
++
++// pegelMerken zieht den Grundgeraeuschpegel aus einem dekodierten Rahmen
++// nach: sofort herunter auf ein neues Minimum, langsam wieder hinauf.
++func (d *MlowDecoder) pegelMerken(pcm []float32) {
++	if len(pcm) == 0 {
++		return
++	}
++	var summe float64
++	for _, v := range pcm {
++		summe += float64(v) * float64(v)
++	}
++	effektiv := float32(math.Sqrt(summe / float64(len(pcm))))
++	d.rauschAuf = 0
++	if !d.pegelKennt {
++		d.grundpegel = effektiv
++		d.pegelKennt = true
++		return
++	}
++	if effektiv < d.grundpegel {
++		d.grundpegel = effektiv
++		return
++	}
++	// Langsam nach oben, damit ein einzelner lauter Rahmen den Pegel
++	// nicht mitreisst: gut zwei Prozent je Rahmen sind bei 60 ms rund
++	// eine Verdopplung in zwei Sekunden.
++	d.grundpegel *= 1.025
++	if d.grundpegel > effektiv {
++		d.grundpegel = effektiv
++	}
++}
++
++// cngHoechstpegel deckelt das Komfortrauschen (etwa -46 dBFS).
++const cngHoechstpegel = 0.005
++
++var (
++	cngEinmal sync.Once
++	cngWert   bool
++)
++
++// cngAn liest einmalig, ob Komfortrauschen gewuenscht ist (MLOW_CNG=1).
++func cngAn() bool {
++	cngEinmal.Do(func() { cngWert = os.Getenv("MLOW_CNG") == "1" })
++	return cngWert
+ }
+ 
+ func (d *MlowDecoder) decodeActiveFrame(frame []byte, outLen int) []float32 {
 diff -ruN meowcaller-rein/mlow/dtx_test.go meowcaller-fix/mlow/dtx_test.go
 --- a/mlow/dtx_test.go	1970-01-01 01:00:00.000000000 +0100
-+++ b/mlow/dtx_test.go	2026-09-24 22:35:28.760215259 +0200
++++ b/mlow/dtx_test.go	2026-09-24 22:37:23.593156250 +0200
 @@ -0,0 +1,72 @@
 +package mlow
 +
@@ -285,7 +511,7 @@ diff -ruN meowcaller-rein/mlow/dtx_test.go meowcaller-fix/mlow/dtx_test.go
 +}
 diff -ruN meowcaller-rein/mlow/encoder.go meowcaller-fix/mlow/encoder.go
 --- a/mlow/encoder.go	2026-09-24 21:21:49.158951736 +0200
-+++ b/mlow/encoder.go	2026-09-24 22:33:55.297820146 +0200
++++ b/mlow/encoder.go	2026-09-24 22:37:23.593204061 +0200
 @@ -301,7 +301,10 @@
  
  // SmplFrameParams is the analyzed parameter set for one 60 ms MLow frame.
@@ -313,7 +539,7 @@ diff -ruN meowcaller-rein/mlow/encoder.go meowcaller-fix/mlow/encoder.go
  	lg.Trace().Int("frame_bytes", len(out)).Int("body_bytes", n).Msg("encode frame: done")
 diff -ruN meowcaller-rein/mlow/fft.go meowcaller-fix/mlow/fft.go
 --- a/mlow/fft.go	2026-09-24 21:21:49.159012211 +0200
-+++ b/mlow/fft.go	2026-09-24 21:44:45.225132521 +0200
++++ b/mlow/fft.go	2026-09-24 22:37:23.593268273 +0200
 @@ -1,6 +1,9 @@
  package mlow
  
@@ -554,7 +780,7 @@ diff -ruN meowcaller-rein/mlow/fft.go meowcaller-fix/mlow/fft.go
  }
 diff -ruN meowcaller-rein/mlow/fft_dft_test.go meowcaller-fix/mlow/fft_dft_test.go
 --- a/mlow/fft_dft_test.go	1970-01-01 01:00:00.000000000 +0100
-+++ b/mlow/fft_dft_test.go	2026-09-24 21:44:45.225172016 +0200
++++ b/mlow/fft_dft_test.go	2026-09-24 22:37:23.593307287 +0200
 @@ -0,0 +1,59 @@
 +package mlow
 +
@@ -617,7 +843,7 @@ diff -ruN meowcaller-rein/mlow/fft_dft_test.go meowcaller-fix/mlow/fft_dft_test.
 +}
 diff -ruN meowcaller-rein/mlow/fft_real_test.go meowcaller-fix/mlow/fft_real_test.go
 --- a/mlow/fft_real_test.go	1970-01-01 01:00:00.000000000 +0100
-+++ b/mlow/fft_real_test.go	2026-09-24 21:44:45.225211141 +0200
++++ b/mlow/fft_real_test.go	2026-09-24 22:37:23.593344929 +0200
 @@ -0,0 +1,67 @@
 +package mlow
 +
@@ -688,7 +914,7 @@ diff -ruN meowcaller-rein/mlow/fft_real_test.go meowcaller-fix/mlow/fft_real_tes
 +}
 diff -ruN meowcaller-rein/mlow/lpc.go meowcaller-fix/mlow/lpc.go
 --- a/mlow/lpc.go	2026-09-24 21:21:49.159187063 +0200
-+++ b/mlow/lpc.go	2026-09-24 21:44:45.225248712 +0200
++++ b/mlow/lpc.go	2026-09-24 22:37:23.593381017 +0200
 @@ -1,6 +1,9 @@
  package mlow
  
