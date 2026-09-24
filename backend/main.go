@@ -3809,6 +3809,12 @@ func main() {
 		}
 		resp, err := client.SendMessage(ctx, jid, msg)
 		if err != nil {
+			// Ohne diese Zeile blieb ein gescheitertes Senden unsichtbar:
+			// die Nachrichten-App bekam ein nacktes "500", und im
+			// Protokoll stand nichts. Genau so verschwand eine Antwort,
+			// waehrend Telegram daneben weiterlief -- der Grund war, dass
+			// die Verbindung zu WhatsApp gerade weg war.
+			fmt.Printf("❌ senden an %s fehlgeschlagen (verbunden=%v): %v\n", to, isConnected, err)
 			http.Error(w, err.Error(), 500)
 			return
 		}

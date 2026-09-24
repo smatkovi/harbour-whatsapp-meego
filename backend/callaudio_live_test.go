@@ -16,7 +16,7 @@ import (
 )
 
 func TestCallAudioLive(t *testing.T) {
-	a, err := openCallAudio(false)
+	a, err := openCallAudio(false, nil)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

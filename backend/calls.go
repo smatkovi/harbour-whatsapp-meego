@@ -108,6 +108,9 @@ type callSession struct {
 	Answered  bool // we answered (incoming) or the peer accepted (outgoing)
 	AudioErr  string
 	audio     *callAudio
+	// Laeuft gerade ein Versuch, PulseAudio zu oeffnen? Ohne die Marke
+	// wuerden Anrufaufbau und OnReady zwei Versuche nebeneinander starten.
+	audioOeffnet bool
 	notifID   uint32
 	mu        sync.Mutex
 }
@@ -116,8 +119,12 @@ func initCalls() {
 	if client == nil {
 		return
 	}
-	logger := zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout, NoColor: true, TimeFormat: "15:04:05"}).
-		Level(zerolog.InfoLevel)
+	// Mit Zeitstempel: ohne ihn stand vor jeder Zeile von meowcaller ein
+	// "<nil>", und im Protokoll liess sich nur die Reihenfolge lesen, nicht
+	// wie lange etwas gedauert hat. Genau das war bei "relay connect timed
+	// out" die entscheidende Frage.
+	logger := zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout, NoColor: true, TimeFormat: "15:04:05.000"}).
+		Level(zerolog.InfoLevel).With().Timestamp().Logger()
 	callClient = meowcaller.NewClient(client, meowcaller.WithLogger(logger))
 	callClient.OnIncomingCall(onIncomingCall)
 	fmt.Println("📞 Voice calls ready (meowcaller)")
@@ -324,7 +331,7 @@ func (s *callSession) startAudio() {
 	if quelle, senke, ok := sipAnrufWenn(eingehend, s.Name, s.Peer, func() {
 		// Beim Ton-Aufbau gibt es nichts mehr anzunehmen.
 	}, func() {
-		s.finish("hangup")
+		s.telefonHatAufgelegt()
 	}); ok {
 		s.mu.Lock()
 		s.usesSip = true
@@ -335,10 +342,36 @@ func (s *callSession) startAudio() {
 		return
 	}
 
-	a, err := openCallAudio(pluginActive())
+	// PulseAudio nebenher oeffnen, nie im Aufrufer.
+	//
+	// Das Oeffnen kann dauern: der Client wartet bis zu fuenf Sekunden auf
+	// den Server und versucht es sechsmal, dazu kommen Portwechsel,
+	// Wartezeit fuer den Codec und das Aufzaehlen der Senken. Auf dem N950
+	// waren das im Feld ueber zwanzig Sekunden -- und weil startAudio vom
+	// Anrufaufbau aus gerufen wird, lagen die genau in dem Fenster, in dem
+	// der Anruf die Verbindung zum Relais herstellen muss. Der Ton kam
+	// dann erst, als der Anruf laengst an "relay connect timed out"
+	// gescheitert war.
+	s.mu.Lock()
+	if s.audioOeffnet {
+		s.mu.Unlock()
+		return
+	}
+	s.audioOeffnet = true
+	s.mu.Unlock()
+	go s.audioOeffnen()
+}
+
+// audioOeffnen holt die Tonwege von PulseAudio und haengt sie an den Anruf.
+// Laeuft immer in einer eigenen Goroutine; bricht ab, sobald der Anruf
+// vorbei ist, statt danach noch eine Aufnahme zu eroeffnen.
+func (s *callSession) audioOeffnen() {
+	vorbei := func() bool { return s.phase() == "ended" }
+	a, err := openCallAudio(pluginActive(), vorbei)
 	if err != nil {
 		fmt.Printf("📞 audio unavailable: %v\n", err)
 		s.mu.Lock()
+		s.audioOeffnet = false
 		s.AudioErr = err.Error()
 		s.mu.Unlock()
 		bumpEvent()
@@ -346,6 +379,7 @@ func (s *callSession) startAudio() {
 	}
 	s.mu.Lock()
 	if s.Phase == "ended" {
+		s.audioOeffnet = false
 		s.mu.Unlock()
 		a.Close()
 		return
@@ -355,10 +389,42 @@ func (s *callSession) startAudio() {
 	if s.Speaker {
 		a.SetSpeaker(true)
 	}
+	// Freiton nur, solange der Angerufene noch nicht abgehoben hat.
+	a.SetRingback(s.Outgoing && !s.Answered)
 	s.mu.Unlock()
 	s.call.Receive(a.Sink())
 	s.call.Play(a.Source())
 	bumpEvent()
+}
+
+// telefonHatAufgelegt beendet beide Haelften, wenn das Telefon auflegt oder
+// den klingelnden Anruf ablehnt.
+//
+// Vorher endete nur unsere: die Anrufansicht ging zu, der WhatsApp-Anruf
+// lief weiter, bis die Gegenseite auflegte -- im Feldprotokoll siebzig
+// Sekunden lang. So lange blieb auch die Medienverbindung zum Relais
+// stehen, mitsamt ihrer Sendeschleife. Der naechste ausgehende Anruf
+// scheiterte dann an "relay connect timed out (DTLS didn't complete)",
+// zweimal von zweimal, und das Geraet hatte zwei Gespraeche gleichzeitig
+// zu rechnen.
+func (s *callSession) telefonHatAufgelegt() {
+	s.mu.Lock()
+	angenommen := s.Answered
+	beendet := s.Phase == "ended"
+	s.mu.Unlock()
+	if !beendet {
+		var err error
+		if angenommen {
+			err = s.call.Hangup()
+		} else {
+			// Noch nicht abgehoben: das ist eine Ablehnung, kein Auflegen.
+			err = s.call.Reject()
+		}
+		if err != nil {
+			fmt.Printf("📞 SIP: WhatsApp-Anruf beenden: %v\n", err)
+		}
+	}
+	s.finish("hangup")
 }
 
 func (s *callSession) finish(reason string) {
@@ -380,6 +446,16 @@ func (s *callSession) finish(reason string) {
 	audio := s.audio
 	s.audio = nil
 	s.mu.Unlock()
+	// Sicherheitsnetz: unsere Haelfte ist beendet, meowcallers darf nicht
+	// weiterlaufen. Tut sie es doch, laeuft ihre Sendeschleife weiter und
+	// haelt die Verbindung zum Relais -- dann rechnet das Geraet zwei
+	// Gespraeche gleichzeitig, und der naechste Anruf bekommt seine
+	// Medienverbindung nicht auf.
+	if s.call != nil && s.call.State() != meowcaller.CallPhaseEnded {
+		if err := s.call.Hangup(); err != nil {
+			fmt.Printf("📞 Anruf beim Aufraeumen beenden: %v\n", err)
+		}
+	}
 	musikFortsetzen()
 	if audio != nil {
 		audio.Close()
@@ -723,7 +799,7 @@ func onIncomingCall(call *meowcaller.Call) {
 		mceCallState("active")
 		bumpEvent()
 	}, func() {
-		s.finish("hangup")
+		s.telefonHatAufgelegt()
 	}); ok {
 		fmt.Println("📞 SIP: Telefon klingelt")
 		s.mu.Lock()
@@ -756,10 +832,21 @@ func startCall(user string) (*callSession, error) {
 		return nil, fmt.Errorf("not connected")
 	}
 	callMu.Lock()
-	busy := curCall != nil && curCall.phase() != "ended"
+	vorher := curCall
 	callMu.Unlock()
-	if busy {
+	if vorher != nil && vorher.phase() != "ended" {
 		return nil, fmt.Errorf("another call is in progress")
+	}
+	// Beendet heisst bei uns beendet -- nicht unbedingt bei meowcaller.
+	// Laeuft dessen Anruf noch, laeuft auch dessen Medienschleife, und der
+	// neue Anruf bekaeme die Verbindung zum selben Relais nicht auf.
+	if vorher != nil && vorher.call != nil && vorher.call.State() != meowcaller.CallPhaseEnded {
+		fmt.Println("📞 der vorige Anruf laeuft noch - erst auflegen")
+		if err := vorher.call.Hangup(); err != nil {
+			fmt.Printf("📞 vorigen Anruf beenden: %v\n", err)
+		}
+		// Dem Gegenueber und dem Relais einen Augenblick lassen.
+		time.Sleep(500 * time.Millisecond)
 	}
 	target := user
 	if !strings.Contains(target, "@") {
@@ -794,14 +881,9 @@ func startCall(user string) (*callSession, error) {
 	s.wire()
 	mceCallState("active")
 	fmt.Printf("📞 outgoing call %s to %s (%s)\n", s.ID, s.Peer, s.Name)
-	// Audio right away for the ringback tone; the mic stays idle until
-	// the engine starts pulling frames
+	// Der Ton wird nebenher aufgebaut (Freiton inbegriffen), damit der
+	// Anruf selbst nicht darauf wartet.
 	s.startAudio()
-	s.mu.Lock()
-	if s.audio != nil && s.Phase != "ended" {
-		s.audio.SetRingback(true)
-	}
-	s.mu.Unlock()
 	bumpEvent()
 	return s, nil
 }

@@ -235,7 +235,11 @@ const (
 // here almost always means the sandbox lacks the Audio/Microphone permission
 // (the session socket is then simply not there) - the caller turns that into
 // a hint for the settings page instead of failing the call.
-func openCallAudio(managed bool) (*callAudio, error) {
+// vorbei sagt, ob der Anruf inzwischen beendet ist. Wird zwischen den
+// Versuchen gefragt: ohne diese Frage lief der Aufbau nach einem
+// gescheiterten Anruf weiter und eroeffnete die Aufnahme, als niemand mehr
+// da war -- im Protokoll als "recording from ..." hinter "call ended".
+func openCallAudio(managed bool, vorbei func() bool) (*callAudio, error) {
 	// Just try to connect. PulseAudio is started on demand here, so a
 	// missing socket is not a verdict - retry for a few seconds and let
 	// the connection attempt itself wake it up. Only a lasting failure
@@ -251,7 +255,11 @@ func openCallAudio(managed bool) (*callAudio, error) {
 	}
 	var pc *pulse.Client
 	var err error
+	abgebrochen := func() bool { return vorbei != nil && vorbei() }
 	for attempt := 1; attempt <= 6; attempt++ {
+		if abgebrochen() {
+			return nil, fmt.Errorf("Anruf vorbei, bevor der Ton stand")
+		}
 		pc, err = pulse.NewClient(opts...)
 		if err == nil {
 			break
@@ -266,6 +274,10 @@ func openCallAudio(managed bool) (*callAudio, error) {
 	}
 	if err != nil {
 		return nil, fmt.Errorf("pulseaudio unreachable after 3s: %w", err)
+	}
+	if abgebrochen() {
+		pc.Close()
+		return nil, fmt.Errorf("Anruf vorbei, bevor der Ton stand")
 	}
 	a := &callAudio{pc: pc, managed: managed}
 	if aec, aerr := speexdsp.New(meowcaller.SampleRate, aecFrame, aecTail); aerr == nil {
@@ -313,6 +325,10 @@ func openCallAudio(managed bool) (*callAudio, error) {
 		} else if a.earpiecePort != "" {
 			a.setPort(a.earpiecePort)
 		}
+	}
+	if abgebrochen() {
+		pc.Close()
+		return nil, fmt.Errorf("Anruf vorbei, bevor der Ton stand")
 	}
 	// Dem Codec Zeit lassen, bevor die Stroeme aufgehen.
 	//
