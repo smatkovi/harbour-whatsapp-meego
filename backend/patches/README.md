@@ -19,7 +19,12 @@ Gerät:
 | kein Feld je Rekursionsknoten | — | — |
 | reelle FFT über die halbe Länge | 75,8 ms | 66,2 ms |
 | Basis 2 und 3 ausgeschrieben | 64,6 ms | 54,2 ms |
-| Pulssuche: Zustand gegriffen, Merkfeld wiederverwendet | **63,4 ms** | **52,8 ms** |
+| Pulssuche: Zustand gegriffen, Merkfeld wiederverwendet | 63,4 ms | 52,8 ms |
+| DCT-Tabellen einmal bauen, Drehtabelle durchgereicht | **52,8 ms** | **41,1 ms** |
+
+Damit ist der Kodierer **unter der Grenze**: ein 60-ms-Rahmen braucht
+52,8 ms, in Sprechpausen 41,1 ms. Vorher war er um den Faktor 4,5 zu
+langsam.
 
 Dekodieren kostet unverändert 3,4 ms — deshalb hört man die Gegenseite
 einwandfrei, während sie von uns nur Bruchstücke bekam.
@@ -45,6 +50,18 @@ Ausgabewert eine Schleife mit Modulo-Rechnung und einer Multiplikation
 auch dann, wenn der Drehfaktor 1 ist. Bei 512 und 576 kommen nur die
 Basen 2 und 3 vor.
 
+**DCT-Tabellen einmal bauen.** `buildDctTables()` lief bei **jeder**
+LPC-Analyse: 2048 Aufrufe von `math.Cos` und 16 KB, die als Rückgabewert
+kopiert wurden — je Rahmen, obwohl die Tabellen nur an Konstanten hängen.
+Im Profil eines Stille-Rahmens stand `math.cos` deshalb immer noch bei
+9 %, lange nachdem die FFT ihre Winkelfunktionen los war.
+
+**Drehtabelle durchreichen.** Jeder Rekursionsknoten holte sie aus einer
+`sync.Map` — 9 % im selben Profil. Sie gilt aber für alle Ebenen: die
+Drehfaktoren der halben Länge sind jeder zweite Eintrag, die der viertel
+Länge jeder vierte. Ein Schrittmaß genügt, und die Tabelle wird einmal je
+FFT geholt.
+
 **Pulssuche.** `sc.fcbStates[wi][idx].num[i]` sind drei Indizierungen mit
 je einer Bereichsprüfung, achtzigmal je Puls, tausendfach je Teilrahmen.
 Jetzt einmal gegriffen. Das Merkfeld in `celpGetMaxiK` wird
@@ -66,15 +83,36 @@ Bauen mit.
   Schmetterling ein Hin- und Herrechnen mit `sin`, `cos` und `atan2` — und
   eine FFT besteht überwiegend aus Additionen.
 
+## NEON: gemessen, verworfen
+
+Drei Befunde, jeder einzeln geprüft:
+
+* **Gos ARM-Assembler kennt NEON nicht.** `VLD1`, `VADDF` und Verwandte
+  werden abgelehnt; es bliebe rohe Wortkodierung je Befehl.
+* **cgo kostet 1212 ns je Übergang** (auf dem Gerät gemessen, leerer
+  Aufruf). Ein Skalarprodukt über 80 Werte dauert 286 ns — die Grenze
+  frisst das Vierfache dessen, was sie beschleunigen soll.
+* **Die NEON-Fassung ist nicht schneller.** clang vektorisiert sauber
+  (`vld1.32`, `vmul.f32 q9`, `vadd.f32 q8` im Disassemblat), aber ohne
+  Übergang gemessen braucht sie 333 ns gegen 286 ns in Go. Die Schleifen
+  sind kurz und ladegebunden, nicht rechengebunden.
+
+Der cgo-Bau selbst funktioniert übrigens: clang mit
+`--target=armv7-unknown-linux-gnueabi -mfloat-abi=softfp` und `lld`
+erzeugt ein Binär, das auf dem Gerät läuft (die GCC-14-Werkzeugkette
+scheidet aus, sie ist `--with-float=hard` gebaut und kollidiert mit Gos
+weichem Gleitkomma-ABI). Nur lohnt es nicht.
+
+Auch geprüft: **GC-Einstellungen** bringen nichts (`GOGC=off`: 62,7 statt
+63,2 ms).
+
 ## Was noch offen ist
 
-Bei 63,4 ms fehlen gut 5 % auf Echtzeit, mit Stille bei 52,8 ms holt der
-Kodierer in Sprechpausen wieder auf. Weiter ginge es mit:
+Die Grenze ist unterschritten, Reserve bleibt wenig: 12 % bei Sprache.
+Wenn mehr gebraucht wird:
 
-* **DTX**: Stille erkennen und die Pulssuche ganz überspringen. Ein
-  Stille-Rahmen kostet heute 52,8 ms für 24 Byte Ergebnis.
-* **NEON**: die Pulssuche ist jetzt der größte Posten (`addPulse` 24 %,
-  `celpGetMaxiK` 10 %, `celpDotProd` 5 %). Gos Übersetzer vektorisiert
-  nicht, und sein ARM-Assembler kennt NEON nur über rohe Wortkodierung —
-  der bequeme Weg wäre cgo mit der MADDE-Werkzeugkette und
-  `-mfpu=neon -O3`, was den statischen Bau dieses Ports aufgibt.
+* **DTX**: Stille erkennen und die Pulssuche überspringen. Ein
+  Stille-Rahmen kostet heute 41,1 ms für 24 Byte Ergebnis — da liegt noch
+  viel.
+* **`SmplMem.regionFor`** stand im letzten Profil bei 9 %; das ist eine
+  Nachschlagefunktion, keine Rechnung.

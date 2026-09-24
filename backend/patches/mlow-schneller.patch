@@ -1,6 +1,6 @@
 diff -ruN meowcaller-rein/mlow/celp_enc.go meowcaller-fix/mlow/celp_enc.go
 --- a/mlow/celp_enc.go	2026-09-24 21:21:49.158789638 +0200
-+++ b/mlow/celp_enc.go	2026-09-24 21:20:38.069853173 +0200
++++ b/mlow/celp_enc.go	2026-09-24 21:23:06.884223062 +0200
 @@ -97,9 +97,14 @@
  
  func celpDotProd(a, b []float32, l int) float32 {
@@ -151,7 +151,7 @@ diff -ruN meowcaller-rein/mlow/celp_enc.go meowcaller-fix/mlow/celp_enc.go
  	for i := 0; i < numsurv; i++ {
 diff -ruN meowcaller-rein/mlow/fft.go meowcaller-fix/mlow/fft.go
 --- a/mlow/fft.go	2026-09-24 21:21:49.159012211 +0200
-+++ b/mlow/fft.go	2026-09-24 21:16:48.676139514 +0200
++++ b/mlow/fft.go	2026-09-24 21:42:43.631110188 +0200
 @@ -1,6 +1,9 @@
  package mlow
  
@@ -163,7 +163,7 @@ diff -ruN meowcaller-rein/mlow/fft.go meowcaller-fix/mlow/fft.go
  
  // cpx is a single-precision complex value.
  //
-@@ -36,9 +39,66 @@
+@@ -36,9 +39,72 @@
  	return n
  }
  
@@ -222,19 +222,22 @@ diff -ruN meowcaller-rein/mlow/fft.go meowcaller-fix/mlow/fft.go
 +
  func fftRec(x []cpx, stride, n int, sign float32, out []cpx) {
 +	k := kratz(2 * n)
-+	fftRecKratz(x, stride, n, sign, out, k)
++	// Die Tabelle wird EINMAL geholt und dann durch die Rekursion
++	// gereicht. Sie gilt fuer alle Ebenen: die Drehfaktoren der halben
++	// Laenge sind jeder zweite Eintrag, die der viertel Laenge jeder
++	// vierte -- deshalb genuegt ein Schrittmass. Vorher fragte jeder
++	// Rekursionsknoten die sync.Map, und die stand im Profil eines
++	// Stille-Rahmens mit 9 %.
++	fftRecKratz(x, stride, n, sign, out, k, drehtabelle(n, sign), 1)
 +	kratzZurueck(k)
 +}
 +
-+func fftRecKratz(x []cpx, stride, n int, sign float32, out, kr []cpx) {
++func fftRecKratz(x []cpx, stride, n int, sign float32, out, kr, dreh []cpx, schritt int) {
  	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/674e85164b35ca19115dfebcf605708d15951ee7/wacore/src/voip/mlow/smpl_perc.rs#L362-L405
  	if n == 1 {
  		out[0] = x[0]
-@@ -46,30 +106,65 @@
- 	}
- 	p := smallestFactor(n)
+@@ -48,28 +114,60 @@
  	if p == n {
-+		dreh := drehtabelle(n, sign)
  		for k := 0; k < n; k++ {
  			var acc cpx
 -			angK := sign * 2.0 * smplPI * float32(k) / float32(n)
@@ -242,7 +245,7 @@ diff -ruN meowcaller-rein/mlow/fft.go meowcaller-fix/mlow/fft.go
 -				ang := angK * float32(j)
 -				w := cpx{re: float32(math.Cos(float64(ang))), im: float32(math.Sin(float64(ang)))}
 -				acc = acc.add(x[j*stride].mul(w))
-+				acc = acc.add(x[j*stride].mul(dreh[(k*j)%n]))
++				acc = acc.add(x[j*stride].mul(dreh[(k*j)%n*schritt]))
  			}
  			out[k] = acc
  		}
@@ -254,10 +257,8 @@ diff -ruN meowcaller-rein/mlow/fft.go meowcaller-fix/mlow/fft.go
 +	kind := kr[n:]
  	for q := 0; q < p; q++ {
 -		fftRec(x[q*stride:], stride*p, m, sign, sub[q*m:(q+1)*m])
-+		fftRecKratz(x[q*stride:], stride*p, m, sign, sub[q*m:(q+1)*m], kind)
- 	}
-+	dreh := drehtabelle(n, sign)
-+
++		fftRecKratz(x[q*stride:], stride*p, m, sign, sub[q*m:(q+1)*m], kind, dreh, schritt*p)
++	}
 +	// Eigene Wege fuer Basis 2 und 3.
 +	//
 +	// Der allgemeine Weg darunter rechnet je Ausgabewert eine Schleife
@@ -272,7 +273,7 @@ diff -ruN meowcaller-rein/mlow/fft.go meowcaller-fix/mlow/fft.go
 +	case 2:
 +		for k := 0; k < m; k++ {
 +			a := sub[k]
-+			b := sub[m+k].mul(dreh[k])
++			b := sub[m+k].mul(dreh[k*schritt])
 +			out[k] = a.add(b)
 +			// e^(i*pi) = -1: die zweite Haelfte ist dieselbe Rechnung
 +			// mit umgedrehtem Vorzeichen, ohne zweite Multiplikation.
@@ -281,18 +282,18 @@ diff -ruN meowcaller-rein/mlow/fft.go meowcaller-fix/mlow/fft.go
 +		return
 +	case 3:
 +		// Die beiden dritten Einheitswurzeln, einmal geholt.
-+		w1 := dreh[n/3]
-+		w2 := dreh[2*n/3]
++		w1 := dreh[n/3*schritt]
++		w2 := dreh[2*n/3*schritt]
 +		for k := 0; k < m; k++ {
 +			a := sub[k]
-+			b := sub[m+k].mul(dreh[k])
-+			c := sub[2*m+k].mul(dreh[2*k])
++			b := sub[m+k].mul(dreh[k*schritt])
++			c := sub[2*m+k].mul(dreh[2*k*schritt])
 +			out[k] = a.add(b).add(c)
 +			out[k+m] = a.add(b.mul(w1)).add(c.mul(w2))
 +			out[k+2*m] = a.add(b.mul(w2)).add(c.mul(w1))
 +		}
 +		return
-+	}
+ 	}
 +
  	for k := 0; k < n; k++ {
  		kmod := k % m
@@ -305,7 +306,7 @@ diff -ruN meowcaller-rein/mlow/fft.go meowcaller-fix/mlow/fft.go
  		}
  		out[k] = acc
  	}
-@@ -85,14 +180,73 @@
+@@ -85,14 +183,73 @@
  // rfftForwardOrdered is the forward real FFT of n real samples, re-packed into the
  // ordered REAL layout: f[0]=DC.re, f[1]=Nyquist.re, then [re,im] pairs for bins
  // 1..n/2-1. Output length is n.
@@ -382,7 +383,7 @@ diff -ruN meowcaller-rein/mlow/fft.go meowcaller-fix/mlow/fft.go
  	cfft(cin, spec, -1.0)
  	f[0] = spec[0].re
  	f[1] = spec[n/2].re
-@@ -100,4 +254,6 @@
+@@ -100,4 +257,6 @@
  		f[2*i] = spec[i].re
  		f[2*i+1] = spec[i].im
  	}
@@ -391,7 +392,7 @@ diff -ruN meowcaller-rein/mlow/fft.go meowcaller-fix/mlow/fft.go
  }
 diff -ruN meowcaller-rein/mlow/fft_dft_test.go meowcaller-fix/mlow/fft_dft_test.go
 --- a/mlow/fft_dft_test.go	1970-01-01 01:00:00.000000000 +0100
-+++ b/mlow/fft_dft_test.go	2026-09-24 21:17:19.813373927 +0200
++++ b/mlow/fft_dft_test.go	2026-09-24 21:23:06.884383487 +0200
 @@ -0,0 +1,59 @@
 +package mlow
 +
@@ -454,7 +455,7 @@ diff -ruN meowcaller-rein/mlow/fft_dft_test.go meowcaller-fix/mlow/fft_dft_test.
 +}
 diff -ruN meowcaller-rein/mlow/fft_real_test.go meowcaller-fix/mlow/fft_real_test.go
 --- a/mlow/fft_real_test.go	1970-01-01 01:00:00.000000000 +0100
-+++ b/mlow/fft_real_test.go	2026-09-24 21:14:58.820524304 +0200
++++ b/mlow/fft_real_test.go	2026-09-24 21:23:06.884423272 +0200
 @@ -0,0 +1,67 @@
 +package mlow
 +
@@ -523,3 +524,52 @@ diff -ruN meowcaller-rein/mlow/fft_real_test.go meowcaller-fix/mlow/fft_real_tes
 +		}
 +	}
 +}
+diff -ruN meowcaller-rein/mlow/lpc.go meowcaller-fix/mlow/lpc.go
+--- a/mlow/lpc.go	2026-09-24 21:21:49.159187063 +0200
++++ b/mlow/lpc.go	2026-09-24 21:42:57.238037591 +0200
+@@ -1,6 +1,9 @@
+ package mlow
+ 
+-import "math"
++import (
++	"math"
++	"sync"
++)
+ 
+ const (
+ 	SmplLPCOrder  = 16
+@@ -128,6 +131,23 @@
+ 	csumsum  [SmplLPCOrder / 4][nfft4]float64
+ }
+ 
++// dctTabellen baut die Kosinustabellen genau einmal.
++//
++// Vorher entstanden sie bei JEDER LPC-Analyse neu: 2048 Aufrufe von
++// math.Cos und 16 KB, die als Rueckgabewert kopiert wurden -- je Rahmen.
++// Im Profil eines Stille-Rahmens stand math.cos damit noch immer bei 9 %,
++// obwohl die FFT ihre Winkelfunktionen laengst los ist. Die Tabellen
++// haengen ausschliesslich an Konstanten der Uebersetzungszeit.
++var (
++	dctEinmal sync.Once
++	dctWert   dctTables
++)
++
++func dctTabellen() *dctTables {
++	dctEinmal.Do(func() { dctWert = buildDctTables() })
++	return &dctWert
++}
++
+ func buildDctTables() dctTables {
+ 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/674e85164b35ca19115dfebcf605708d15951ee7/wacore/src/voip/mlow/smpl_lpc.rs#L115-L143
+ 	twoPi := 2.0 * smplPIF64
+@@ -271,9 +291,8 @@
+ 		f2d[i] = float64(f2[i])
+ 	}
+ 
+-	tables := buildDctTables()
+ 	var r [SmplLPCOrder + 1]float64
+-	bruteDct(&tables, f2d, SmplLPCOrder, r[:])
++	bruteDct(dctTabellen(), f2d, SmplLPCOrder, r[:])
+ 
+ 	var rc [SmplLPCOrder]float32
+ 	ac2rcDbl(r[:], SmplLPCOrder, smplLPCReg, rc[:])
