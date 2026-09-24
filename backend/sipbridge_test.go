@@ -12,6 +12,7 @@ package main
 // Genau das war der Fehler "der andere hoert mich nicht" auf dem N950.
 
 import (
+	"net"
 	"testing"
 	"time"
 )
@@ -145,5 +146,38 @@ func TestMuLawHinUndZurueck(t *testing.T) {
 		if abstand > grenze {
 			t.Fatalf("%d wurde zu %d (Abstand %d, erlaubt %d)", wert, zurueck, abstand, grenze)
 		}
+	}
+}
+
+// Wohin der Ton ans Telefon geht, entscheiden dessen eigene Pakete -- nicht
+// die SDP-Antwort. Das Telefon nannte darin die Adresse seiner
+// Mobilfunkverbindung (100.64.120.110, Carrier-NAT); dorthin ging alles
+// ueber den Router ins Netz hinaus, und der Anrufer war nicht zu hoeren.
+func TestZielFolgtDenPaketen(t *testing.T) {
+	b := &sipBruecke{vonTelefon: neuerTonPuffer(rahmenSamples*6, rahmenSamples*2)}
+
+	// Was die SDP behauptet.
+	b.gegenstelleAusSDP("v=0\r\nc=IN IP4 100.64.120.110\r\nm=audio 7078 RTP/AVP 0\r\n")
+	if b.gegen == nil || b.gegen.IP.String() != "100.64.120.110" {
+		t.Fatalf("SDP-Ziel nicht uebernommen: %v", b.gegen)
+	}
+
+	// Woher die Pakete wirklich kommen.
+	echt := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 7078}
+	b.zielAktualisieren(echt)
+	if b.gegen.IP.String() != "127.0.0.1" || b.gegen.Port != 7078 {
+		t.Fatalf("Ziel folgt den Paketen nicht: %v", b.gegen)
+	}
+
+	// Gleichbleibende Quelle aendert nichts (und meldet nichts).
+	b.zielAktualisieren(&net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 7078})
+	if b.gegen.Port != 7078 {
+		t.Fatalf("Ziel unnoetig geaendert: %v", b.gegen)
+	}
+
+	// Wechselt das Telefon den Port, folgen wir.
+	b.zielAktualisieren(&net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 7090})
+	if b.gegen.Port != 7090 {
+		t.Fatalf("Portwechsel nicht gefolgt: %v", b.gegen)
 	}
 }

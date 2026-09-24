@@ -247,6 +247,10 @@ type sipBruecke struct {
 	// eine einzige Leerstelle im Puffer entstuende.
 	verworfen uint64
 	rahmen    uint64
+	// Und die Gegenrichtung: Pakete an das Telefon. Ohne sie liess sich
+	// "ich hoere den Anrufer nicht" nicht von "es geht nichts hinaus"
+	// unterscheiden.
+	hinaus uint64
 
 	// Wird gerufen, wenn das Telefon auflegt (BYE) oder ablehnt.
 	beiAuflegen func()
@@ -368,7 +372,7 @@ func (b *sipBruecke) klingeln(name, nummer string, beiAnnahme, beiAuflegen func(
 	// Die Zaehler gehoeren zum Gespraech, nicht zur Laufzeit.
 	b.pakete, b.spitze, b.gemeldet = 0, 0, time.Time{}
 	b.luecken, b.lueckeGemeldet = 0, time.Time{}
-	b.verworfen, b.rahmen = 0, 0
+	b.verworfen, b.rahmen, b.hinaus = 0, 0, 0
 	b.vonTelefon.zuruecksetzen()
 	b.mu.Unlock()
 	if kontakt == nil {
@@ -529,10 +533,8 @@ func (b *sipBruecke) rtpLesen() {
 		if err != nil {
 			return
 		}
+		b.zielAktualisieren(von)
 		b.mu.Lock()
-		if b.gegen == nil {
-			b.gegen = von // erste Quelle gewinnt, symmetrisches RTP
-		}
 		laeuft := b.laeuft
 		b.mu.Unlock()
 		if !laeuft {
@@ -574,12 +576,13 @@ func (b *sipBruecke) zaehlen(von *net.UDPAddr, art uint8, laenge int, spitze flo
 	jetzt := time.Now()
 	faellig := jetzt.Sub(b.gemeldet) >= time.Second
 	anzahl, hoechste := b.pakete, b.spitze
-	verworfen, rahmen := b.verworfen, b.rahmen
+	verworfen, rahmen, hinaus := b.verworfen, b.rahmen, b.hinaus
 	if erstes || faellig {
 		b.gemeldet = jetzt
 		b.spitze = 0
 		b.verworfen = 0
 		b.rahmen = 0
+		b.hinaus = 0
 	}
 	b.mu.Unlock()
 	if erstes {
@@ -588,8 +591,8 @@ func (b *sipBruecke) zaehlen(von *net.UDPAddr, art uint8, laenge int, spitze flo
 		return
 	}
 	if faellig {
-		fmt.Printf("%s 📞 SIP: Telefonmikrofon %d Pakete, Spitze %.3f, %d Rahmen abgeholt, %d Samples verworfen\n",
-			jetzt.Format("15:04:05.000"), anzahl, hoechste, rahmen, verworfen)
+		fmt.Printf("%s 📞 SIP: Telefonmikrofon %d Pakete, Spitze %.3f, %d Rahmen abgeholt, %d Samples verworfen, %d Pakete ans Telefon\n",
+			jetzt.Format("15:04:05.000"), anzahl, hoechste, rahmen, verworfen, hinaus)
 	}
 }
 
@@ -610,6 +613,36 @@ func (b *sipBruecke) luecke() {
 		fmt.Printf("%s 📞 SIP: %d Luecken im Ton zum Gespraech\n",
 			jetzt.Format("15:04:05.000"), anzahl)
 	}
+}
+
+// zielAktualisieren merkt sich, wohin der Ton ans Telefon geht: dorthin,
+// wo dessen eigene Pakete herkommen (symmetrisches RTP).
+//
+// Nicht dorthin, wohin die SDP-Antwort zeigt. Das Telefon nannte darin
+// "c=IN IP4 100.64.120.110", die Adresse seiner Mobilfunkverbindung aus
+// dem Carrier-NAT. Jedes Paket dorthin ging ueber den Router hinaus ins
+// Netz (ip route get: via 192.168.1.1 dev wlan0) und kam bei ihm nie an
+// -- der Anrufer war nicht zu hoeren, waehrend seine eigenen Pakete die
+// ganze Zeit ordentlich von 127.0.0.1 kamen. Welche Adresse ein Endpunkt
+// in die SDP schreibt, ist eine Behauptung; woher seine Pakete kommen,
+// ist eine Tatsache.
+func (b *sipBruecke) zielAktualisieren(von *net.UDPAddr) {
+	if von == nil {
+		return
+	}
+	b.mu.Lock()
+	alt := b.gegen
+	if alt != nil && alt.IP.Equal(von.IP) && alt.Port == von.Port {
+		b.mu.Unlock()
+		return
+	}
+	b.gegen = von
+	b.mu.Unlock()
+	if alt == nil {
+		fmt.Printf("📞 SIP: Ton geht an %s (aus den Paketen des Telefons)\n", von)
+		return
+	}
+	fmt.Printf("📞 SIP: Ton geht jetzt an %s statt an %s\n", von, alt)
 }
 
 // ------------------------------------------------- die beiden Enden fuer meowcaller
@@ -687,7 +720,11 @@ func (s sipSenke) WriteFrame(rahmen []float32) error {
 		if err != nil {
 			continue
 		}
-		_, _ = b.rtp.WriteToUDP(roh, gegen)
+		if _, err := b.rtp.WriteToUDP(roh, gegen); err == nil {
+			b.mu.Lock()
+			b.hinaus++
+			b.mu.Unlock()
+		}
 	}
 	return nil
 }
