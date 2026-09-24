@@ -115,10 +115,34 @@ type callSession struct {
 	mu           sync.Mutex
 }
 
+// dtxSetzen schaltet die Sprechpausen-Ersparnis des Kodierers scharf,
+// wenn die Einstellung "call_dtx" auf 1 steht.
+//
+// In einer Pause kostet ein Rahmen dann eine halbe statt einundvierzig
+// Millisekunden, und hinaus geht ein einziges Byte statt vierundzwanzig.
+// Standardmaessig aus, weil zweierlei ungeprueft ist: wie WhatsApps
+// eigener Dekodierer auf einen Rahmen aus einem Byte reagiert, und ob das
+// erste Wort nach einer Pause darunter leidet -- die Analyse haelt
+// waehrend der Pause ihren Zustand an.
+//
+// Umgestellt wird es ueber /prefs/set?call_dtx=1; der Kodierer liest die
+// Umgebungsvariable einmal, beim ersten Rahmen eines Anrufs.
+func dtxSetzen() {
+	prefsMutex.RLock()
+	an := prefs["call_dtx"] == "1"
+	prefsMutex.RUnlock()
+	if an {
+		os.Setenv("MLOW_DTX", "1")
+	} else {
+		os.Unsetenv("MLOW_DTX")
+	}
+}
+
 func initCalls() {
 	if client == nil {
 		return
 	}
+	dtxSetzen()
 	// Mit Zeitstempel: ohne ihn stand vor jeder Zeile von meowcaller ein
 	// "<nil>", und im Protokoll liess sich nur die Reihenfolge lesen, nicht
 	// wie lange etwas gedauert hat. Genau das war bei "relay connect timed
@@ -954,6 +978,7 @@ func startCall(user string) (*callSession, error) {
 	callMu.Unlock()
 	s.wire()
 	go lastwache(s)
+	dtxSetzen()
 	mceCallState("active")
 	fmt.Printf("📞 outgoing call %s to %s (%s)\n", s.ID, s.Peer, s.Name)
 	// Der Ton wird nebenher aufgebaut (Freiton inbegriffen), damit der

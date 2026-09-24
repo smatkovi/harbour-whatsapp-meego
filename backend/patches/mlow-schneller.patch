@@ -1,6 +1,64 @@
+diff -ruN meowcaller-rein/mlow/analysis.go meowcaller-fix/mlow/analysis.go
+--- a/mlow/analysis.go	2026-09-24 21:21:49.158710207 +0200
++++ b/mlow/analysis.go	2026-09-24 22:34:07.670078484 +0200
+@@ -1,6 +1,10 @@
+ package mlow
+ 
+-import "math"
++import (
++	"math"
++	"os"
++	"sync"
++)
+ 
+ // MLow encoder analysis — faithful port of analysis.rs (datasheets/mlow-encoder.md):
+ // PCM → SmplFrameParams. Per internal frame: LPC front-end (window → FFT-autocorr →
+@@ -125,6 +129,23 @@
+ 	spActProb := vad.VadResults
+ 	codedAsActiveVoice := vad.CodedAsActiveVoice
+ 
++	// DTX: in Sprechpausen nur ein Byte schicken.
++	//
++	// Ein Stille-Rahmen kostet sonst dieselbe volle Analyse wie Sprache --
++	// auf der N950 41 ms fuer 24 Byte Ergebnis, die der Dekodierer
++	// ohnehin wegwirft. Das TOC-Byte 0x10 sagt "16 kHz, 60 ms, nicht
++	// aktiv"; mehr braucht die Gegenseite nicht, um Stille auszugeben.
++	//
++	// Bewusst abschaltbar und standardmaessig AUS, denn zweierlei ist
++	// ungeprueft: wie WhatsApps eigener Dekodierer auf einen Rahmen aus
++	// einem einzigen Byte reagiert, und ob der erste Rahmen nach einer
++	// Pause schlechter klingt -- die Analyse haelt waehrend der Pause
++	// ihren Zustand an, und der stammt dann noch aus der Zeit vor der
++	// Pause.
++	if dtxAn() && !codedAsActiveVoice {
++		return SmplFrameParams{TOC: 0x10, Config: 0, Inaktiv: true}
++	}
++
+ 	if !es.hpSet {
+ 		es.hpMA, es.hpAR = SmplGetHpCoefs(smplEncHpFcornerHz)
+ 		es.hpSet = true
+@@ -238,6 +259,18 @@
+ 	return SmplFrameParams{TOC: 0x50, Config: 0, Internal: internal}
+ }
+ 
++// dtxAn liest einmalig, ob in Sprechpausen nur ein Byte geschickt werden
++// soll (MLOW_DTX=1).
++var (
++	dtxEinmal sync.Once
++	dtxWert   bool
++)
++
++func dtxAn() bool {
++	dtxEinmal.Do(func() { dtxWert = os.Getenv("MLOW_DTX") == "1" })
++	return dtxWert
++}
++
+ // quantize runs the bit-exact LSF quantizer + the C cond-coding condition.
+ func (fe *frontEndLsf) quantize(synthT *SmplSynthTables, voiced int, prevNlsf []float32) (int32, [16]int32, []float32, [17]float32) {
+ 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/ed12f359a086b28e807ba236f0977af1000859fe/wacore/src/voip/mlow/analysis.rs#L1065-L1105
 diff -ruN meowcaller-rein/mlow/celp_enc.go meowcaller-fix/mlow/celp_enc.go
 --- a/mlow/celp_enc.go	2026-09-24 21:21:49.158789638 +0200
-+++ b/mlow/celp_enc.go	2026-09-24 21:23:06.884223062 +0200
++++ b/mlow/celp_enc.go	2026-09-24 21:44:45.225014537 +0200
 @@ -97,9 +97,14 @@
  
  func celpDotProd(a, b []float32, l int) float32 {
@@ -149,9 +207,113 @@ diff -ruN meowcaller-rein/mlow/celp_enc.go meowcaller-fix/mlow/celp_enc.go
  	var sortIx [celpMaxNumsurv]int32
  	celpGetMaxiK(q, sortIx[:], fcbSubfrlen, numsurv)
  	for i := 0; i < numsurv; i++ {
+diff -ruN meowcaller-rein/mlow/dtx_test.go meowcaller-fix/mlow/dtx_test.go
+--- a/mlow/dtx_test.go	1970-01-01 01:00:00.000000000 +0100
++++ b/mlow/dtx_test.go	2026-09-24 22:35:28.760215259 +0200
+@@ -0,0 +1,72 @@
++package mlow
++
++import (
++	"math"
++	"testing"
++)
++
++// In Sprechpausen soll nur das TOC-Byte hinausgehen -- aber nur, wenn der
++// Schalter steht, und Sprache muss unberuehrt bleiben.
++func TestDtxSchicktNurDasTocByte(t *testing.T) {
++	stille := make([]float32, 960)
++	sprache := make([]float32, 960)
++	for i := range sprache {
++		h := 0.5 * (1 - float32(math.Cos(2*math.Pi*float64(i)/960)))
++		sprache[i] = h * 0.4 * float32(math.Sin(float64(i)*0.05))
++	}
++
++	// Ohne Schalter bleibt alles wie bisher.
++	dtxEinmal.Do(func() {})
++	dtxWert = false
++	ohne := NewMlowEncoder()
++	for i := 0; i < 3; i++ {
++		ohne.Encode(stille)
++	}
++	voll, err := ohne.Encode(stille)
++	if err != nil {
++		t.Fatalf("Kodieren: %v", err)
++	}
++	if len(voll) <= 1 {
++		t.Fatalf("ohne Schalter kam ein Rahmen aus %d Byte", len(voll))
++	}
++
++	// Mit Schalter: ein Byte, und es sagt "nicht aktiv".
++	dtxWert = true
++	defer func() { dtxWert = false }()
++	mit := NewMlowEncoder()
++	for i := 0; i < 5; i++ {
++		mit.Encode(stille)
++	}
++	kurz, err := mit.Encode(stille)
++	if err != nil {
++		t.Fatalf("Kodieren mit DTX: %v", err)
++	}
++	if len(kurz) != 1 {
++		t.Fatalf("mit DTX kam ein Rahmen aus %d Byte, erwartet 1", len(kurz))
++	}
++	toc := ParseSmplTOC(kurz[0])
++	if toc.Active {
++		t.Fatalf("das TOC-Byte %#x sagt aktiv", kurz[0])
++	}
++	if toc.FrameMs != 60 || toc.SampleRate != 16000 {
++		t.Fatalf("TOC %#x: %d ms, %d Hz", kurz[0], toc.FrameMs, toc.SampleRate)
++	}
++
++	// Der Dekodierer muss damit umgehen, ohne zu stolpern.
++	dec := NewMlowDecoder()
++	pcm := dec.Decode(kurz)
++	for i, v := range pcm {
++		if v != 0 {
++			t.Fatalf("Stelle %d ist %v, erwartet Stille", i, v)
++		}
++	}
++
++	// Sprache geht weiterhin vollstaendig hinaus.
++	lang, err := mit.Encode(sprache)
++	if err != nil {
++		t.Fatalf("Sprache kodieren: %v", err)
++	}
++	if len(lang) <= 1 {
++		t.Fatalf("Sprache kam als %d Byte heraus", len(lang))
++	}
++}
+diff -ruN meowcaller-rein/mlow/encoder.go meowcaller-fix/mlow/encoder.go
+--- a/mlow/encoder.go	2026-09-24 21:21:49.158951736 +0200
++++ b/mlow/encoder.go	2026-09-24 22:33:55.297820146 +0200
+@@ -301,7 +301,10 @@
+ 
+ // SmplFrameParams is the analyzed parameter set for one 60 ms MLow frame.
+ type SmplFrameParams struct {
+-	TOC      byte
++	TOC byte
++	// Inaktiv: der Rahmen traegt keine Sprache. Dann besteht er nur aus
++	// dem TOC-Byte -- siehe smplAnalyzeFrameSt.
++	Inaktiv  bool
+ 	Config   int
+ 	Internal [3]SmplInternalParams
+ }
+@@ -598,6 +601,12 @@
+ 	n := enc.ConsumedLen()
+ 	body := enc.Bytes()
+ 	out := make([]byte, 0, 1+n)
++	if fp.Inaktiv {
++		// Ein inaktiver Rahmen ist das TOC-Byte und sonst nichts: der
++		// Dekodierer liest bei !Active den Rumpf gar nicht erst, sondern
++		// gibt Stille aus (decoder.go: "inactive/SID, emitting silence").
++		return []byte{fp.TOC}, nil
++	}
+ 	out = append(out, fp.TOC)
+ 	out = append(out, body[:n]...)
+ 	lg.Trace().Int("frame_bytes", len(out)).Int("body_bytes", n).Msg("encode frame: done")
 diff -ruN meowcaller-rein/mlow/fft.go meowcaller-fix/mlow/fft.go
 --- a/mlow/fft.go	2026-09-24 21:21:49.159012211 +0200
-+++ b/mlow/fft.go	2026-09-24 21:42:43.631110188 +0200
++++ b/mlow/fft.go	2026-09-24 21:44:45.225132521 +0200
 @@ -1,6 +1,9 @@
  package mlow
  
@@ -392,7 +554,7 @@ diff -ruN meowcaller-rein/mlow/fft.go meowcaller-fix/mlow/fft.go
  }
 diff -ruN meowcaller-rein/mlow/fft_dft_test.go meowcaller-fix/mlow/fft_dft_test.go
 --- a/mlow/fft_dft_test.go	1970-01-01 01:00:00.000000000 +0100
-+++ b/mlow/fft_dft_test.go	2026-09-24 21:23:06.884383487 +0200
++++ b/mlow/fft_dft_test.go	2026-09-24 21:44:45.225172016 +0200
 @@ -0,0 +1,59 @@
 +package mlow
 +
@@ -455,7 +617,7 @@ diff -ruN meowcaller-rein/mlow/fft_dft_test.go meowcaller-fix/mlow/fft_dft_test.
 +}
 diff -ruN meowcaller-rein/mlow/fft_real_test.go meowcaller-fix/mlow/fft_real_test.go
 --- a/mlow/fft_real_test.go	1970-01-01 01:00:00.000000000 +0100
-+++ b/mlow/fft_real_test.go	2026-09-24 21:23:06.884423272 +0200
++++ b/mlow/fft_real_test.go	2026-09-24 21:44:45.225211141 +0200
 @@ -0,0 +1,67 @@
 +package mlow
 +
@@ -526,7 +688,7 @@ diff -ruN meowcaller-rein/mlow/fft_real_test.go meowcaller-fix/mlow/fft_real_tes
 +}
 diff -ruN meowcaller-rein/mlow/lpc.go meowcaller-fix/mlow/lpc.go
 --- a/mlow/lpc.go	2026-09-24 21:21:49.159187063 +0200
-+++ b/mlow/lpc.go	2026-09-24 21:42:57.238037591 +0200
++++ b/mlow/lpc.go	2026-09-24 21:44:45.225248712 +0200
 @@ -1,6 +1,9 @@
  package mlow
  

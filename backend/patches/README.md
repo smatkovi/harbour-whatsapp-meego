@@ -106,6 +106,28 @@ weichem Gleitkomma-ABI). Nur lohnt es nicht.
 Auch geprüft: **GC-Einstellungen** bringen nichts (`GOGC=off`: 62,7 statt
 63,2 ms).
 
+## DTX: Sprechpausen kosten nichts mehr
+
+Mit `MLOW_DTX=1` schickt der Kodierer in einer Pause nur das TOC-Byte
+`0x10` ("16 kHz, 60 ms, nicht aktiv") und sonst nichts. Der Dekodierer
+liest bei einem inaktiven Rahmen den Rumpf gar nicht erst, sondern gibt
+Stille aus (`decoder.go`: "inactive/SID, emitting silence").
+
+| | ohne DTX | mit DTX |
+|---|---|---|
+| Stille | 41,2 ms, 24 Byte | **0,5 ms, 1 Byte** |
+| Sprache | 52,5 ms, 108 Byte | 52,5 ms, 108 Byte |
+
+Im Backend hängt es an der Einstellung `call_dtx` (`/prefs/set?call_dtx=1`),
+**standardmäßig aus**. Zwei Dinge sind ungeprüft:
+
+* wie WhatsApps eigener Dekodierer auf einen Rahmen aus einem einzigen
+  Byte reagiert — unserer ist nachgebaut, seiner nicht;
+* ob das erste Wort nach einer Pause leidet. Die Analyse hält während der
+  Pause ihren Zustand an, und der stammt dann noch aus der Zeit davor.
+  Richtige DTX-Umsetzungen lassen die billigen Teile (Hochpass, Verlauf)
+  weiterlaufen; das wäre der nächste Schritt, falls man es hört.
+
 ## Was noch offen ist
 
 Die Grenze ist unterschritten, Reserve bleibt wenig: 12 % bei Sprache.
