@@ -91,7 +91,7 @@ var (
 type callSession struct {
 	// Laeuft der Ton ueber die SIP-Bruecke statt ueber PulseAudio?
 	usesSip bool
-	call *meowcaller.Call
+	call    *meowcaller.Call
 
 	ID        string
 	Peer      string // phone-number user part, or the LID user part if unresolvable
@@ -111,8 +111,8 @@ type callSession struct {
 	// Laeuft gerade ein Versuch, PulseAudio zu oeffnen? Ohne die Marke
 	// wuerden Anrufaufbau und OnReady zwei Versuche nebeneinander starten.
 	audioOeffnet bool
-	notifID   uint32
-	mu        sync.Mutex
+	notifID      uint32
+	mu           sync.Mutex
 }
 
 func initCalls() {
@@ -128,6 +128,79 @@ func initCalls() {
 	callClient = meowcaller.NewClient(client, meowcaller.WithLogger(logger))
 	callClient.OnIncomingCall(onIncomingCall)
 	fmt.Println("📞 Voice calls ready (meowcaller)")
+}
+
+// lastwache schreibt waehrend eines Gespraechs mit, wie viel Rechenzeit
+// dieser Prozess bekommt und wie hoch die Last ist.
+//
+// Das ist die Frage, die das Protokoll bisher nicht beantworten konnte:
+// wenn der Aufbau der Medienverbindung nach zwoelf Sekunden aufgibt und
+// PulseAudio im selben Moment nicht einmal antwortet, liegt das dann an
+// der Gegenstelle oder daran, dass dieser eine Kern nichts mehr hergibt?
+// Ein Zehntel Sekunde Rechenzeit je Sekunde bei Last 6 ist eine andere
+// Diagnose als eine halbe Sekunde bei Last 1.
+func lastwache(s *callSession) {
+	// PulseAudio laeuft auf diesem Geraet mit erhoehter Prioritaet. Wenn
+	// es haengt, bekommt es trotzdem den Kern -- und dann verhungert
+	// nicht nur unser Ton, sondern auch der Handschlag zum Relais. Ob das
+	// so ist, sieht man nur, wenn man dessen Rechenzeit danebenlegt.
+	pulsePid := ""
+	if eintraege, err := os.ReadDir("/proc"); err == nil {
+		for _, e := range eintraege {
+			if !e.IsDir() {
+				continue
+			}
+			name, err := os.ReadFile("/proc/" + e.Name() + "/comm")
+			if err == nil && strings.TrimSpace(string(name)) == "pulseaudio" {
+				pulsePid = e.Name()
+				break
+			}
+		}
+	}
+	cpuVon := func(pfad string) float64 {
+		roh, err := os.ReadFile(pfad)
+		if err != nil {
+			return 0
+		}
+		// Der Name in Klammern kann Leerzeichen enthalten -- ab der
+		// schliessenden Klammer zaehlen, dann sind utime/stime Feld 12/13.
+		zu := strings.LastIndex(string(roh), ")")
+		if zu < 0 {
+			return 0
+		}
+		f := strings.Fields(string(roh)[zu+1:])
+		if len(f) < 13 {
+			return 0
+		}
+		var ut, st float64
+		fmt.Sscanf(f[11], "%f", &ut)
+		fmt.Sscanf(f[12], "%f", &st)
+		return (ut + st) / 100 // USER_HZ ist auf diesem Kernel 100
+	}
+	pulseStat := ""
+	if pulsePid != "" {
+		pulseStat = "/proc/" + pulsePid + "/stat"
+	}
+	vorher, vorherPA, zuletzt := cpuVon("/proc/self/stat"), cpuVon(pulseStat), time.Now()
+	for s.phase() != "ended" {
+		time.Sleep(2 * time.Second)
+		jetzt, jetztPA, nun := cpuVon("/proc/self/stat"), cpuVon(pulseStat), time.Now()
+		spanne := nun.Sub(zuletzt).Seconds()
+		if spanne <= 0 {
+			continue
+		}
+		last := ""
+		if roh, err := os.ReadFile("/proc/loadavg"); err == nil {
+			last = strings.Fields(string(roh))[0]
+		}
+		pa := ""
+		if pulseStat != "" {
+			pa = fmt.Sprintf(", PulseAudio %.0f%%", (jetztPA-vorherPA)/spanne*100)
+		}
+		fmt.Printf("%s 📞 Last: wir %.0f%%%s, Systemlast %s\n",
+			nun.Format("15:04:05.000"), (jetzt-vorher)/spanne*100, pa, last)
+		vorher, vorherPA, zuletzt = jetzt, jetztPA, nun
+	}
 }
 
 // callHandledLocally tells the old CallTerminate path to stay quiet.
@@ -771,6 +844,7 @@ func onIncomingCall(call *meowcaller.Call) {
 	callSeen[s.ID] = true
 	callMu.Unlock()
 	s.wire()
+	go lastwache(s)
 	fmt.Printf("📞 incoming call %s from %s (%s)\n", s.ID, s.Peer, s.Name)
 	mceCallState("ringing")
 
@@ -879,6 +953,7 @@ func startCall(user string) (*callSession, error) {
 	callSeen[s.ID] = true
 	callMu.Unlock()
 	s.wire()
+	go lastwache(s)
 	mceCallState("active")
 	fmt.Printf("📞 outgoing call %s to %s (%s)\n", s.ID, s.Peer, s.Name)
 	// Der Ton wird nebenher aufgebaut (Freiton inbegriffen), damit der

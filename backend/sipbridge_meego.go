@@ -41,12 +41,12 @@ import (
 )
 
 const (
-	sipHost      = "127.0.0.1"
-	sipPort      = 5060
-	rtpPort      = 40100
-	sipRate      = 8000  // G.711 ist immer 8 kHz
-	waRate       = 16000 // meowcaller.SampleRate
-	rtpFrame     = 160   // 20 ms bei 8 kHz
+	sipHost  = "127.0.0.1"
+	sipPort  = 5060
+	rtpPort  = 40100
+	sipRate  = 8000  // G.711 ist immer 8 kHz
+	waRate   = 16000 // meowcaller.SampleRate
+	rtpFrame = 160   // 20 ms bei 8 kHz
 	// Ein meowcaller-Rahmen: 60 ms bei 16 kHz (meowcaller.FrameSamples).
 	rahmenSamples = 960
 	nutzlastPCMU  = 0
@@ -124,15 +124,19 @@ func neuerTonPuffer(max, vorlauf int) *tonPuffer {
 	return &tonPuffer{max: max, vorlauf: vorlauf}
 }
 
-func (p *tonPuffer) schreiben(s []float32) {
+// schreiben legt Samples ab und sagt, wie viele dabei verloren gingen.
+func (p *tonPuffer) schreiben(s []float32) int {
 	p.mu.Lock()
 	p.dat = append(p.dat, s...)
 	// Laeuft er ueber, faellt das Aelteste weg. Bei Ton ist eine Luecke
 	// besser als wachsende Verzoegerung, die nie wieder aufholt.
+	weg := 0
 	if len(p.dat) > p.max {
-		p.dat = p.dat[len(p.dat)-p.max:]
+		weg = len(p.dat) - p.max
+		p.dat = p.dat[weg:]
 	}
 	p.mu.Unlock()
+	return weg
 }
 
 // zuruecksetzen leert den Speicher fuer ein neues Gespraech -- sonst ginge
@@ -209,7 +213,7 @@ type sipBruecke struct {
 	dc      *sipgo.DialogClientCache
 	sitzung *sipgo.DialogClientSession
 	// Bricht ein noch klingelndes INVITE ab (CANCEL statt BYE).
-	abbruch context.CancelFunc
+	abbruch    context.CancelFunc
 	angenommen bool
 
 	// Wohin das Telefon erreichbar ist, aus seinem REGISTER.
@@ -236,6 +240,13 @@ type sipBruecke struct {
 	// Angerufenen liest man hier ab, nicht am Paketzaehler.
 	luecken        uint64
 	lueckeGemeldet time.Time
+	// Was der Puffer beim Ueberlaufen wegwerfen musste, und wie viele
+	// Rahmen die Sendeschleife geholt hat. Beides gehoert zusammen: holt
+	// sie weniger als 16,7 je Sekunde, kommt sie nicht nach, und der
+	// Ueberlauf frisst genau die Luecke, die man dann hoert -- ohne dass
+	// eine einzige Leerstelle im Puffer entstuende.
+	verworfen uint64
+	rahmen    uint64
 
 	// Wird gerufen, wenn das Telefon auflegt (BYE) oder ablehnt.
 	beiAuflegen func()
@@ -357,6 +368,7 @@ func (b *sipBruecke) klingeln(name, nummer string, beiAnnahme, beiAuflegen func(
 	// Die Zaehler gehoeren zum Gespraech, nicht zur Laufzeit.
 	b.pakete, b.spitze, b.gemeldet = 0, 0, time.Time{}
 	b.luecken, b.lueckeGemeldet = 0, time.Time{}
+	b.verworfen, b.rahmen = 0, 0
 	b.vonTelefon.zuruecksetzen()
 	b.mu.Unlock()
 	if kontakt == nil {
@@ -542,8 +554,8 @@ func (b *sipBruecke) rtpLesen() {
 				spitze = w
 			}
 		}
-		b.vonTelefon.schreiben(hoch(roh))
-		b.zaehlen(von, p.PayloadType, len(p.Payload), spitze)
+		weg := b.vonTelefon.schreiben(hoch(roh))
+		b.zaehlen(von, p.PayloadType, len(p.Payload), spitze, weg)
 	}
 }
 
@@ -551,9 +563,10 @@ func (b *sipBruecke) rtpLesen() {
 // Paket bekommt eine eigene Zeile, samt Nutzlastart und Absender: kommt
 // gar nichts, steht im Protokoll nichts -- und genau das ist die Antwort
 // auf "die Gegenseite hoert mich nicht".
-func (b *sipBruecke) zaehlen(von *net.UDPAddr, art uint8, laenge int, spitze float32) {
+func (b *sipBruecke) zaehlen(von *net.UDPAddr, art uint8, laenge int, spitze float32, weg int) {
 	b.mu.Lock()
 	b.pakete++
+	b.verworfen += uint64(weg)
 	if spitze > b.spitze {
 		b.spitze = spitze
 	}
@@ -561,9 +574,12 @@ func (b *sipBruecke) zaehlen(von *net.UDPAddr, art uint8, laenge int, spitze flo
 	jetzt := time.Now()
 	faellig := jetzt.Sub(b.gemeldet) >= time.Second
 	anzahl, hoechste := b.pakete, b.spitze
+	verworfen, rahmen := b.verworfen, b.rahmen
 	if erstes || faellig {
 		b.gemeldet = jetzt
 		b.spitze = 0
+		b.verworfen = 0
+		b.rahmen = 0
 	}
 	b.mu.Unlock()
 	if erstes {
@@ -572,8 +588,8 @@ func (b *sipBruecke) zaehlen(von *net.UDPAddr, art uint8, laenge int, spitze flo
 		return
 	}
 	if faellig {
-		fmt.Printf("%s 📞 SIP: Telefonmikrofon %d Pakete, Spitze %.3f\n",
-			jetzt.Format("15:04:05.000"), anzahl, hoechste)
+		fmt.Printf("%s 📞 SIP: Telefonmikrofon %d Pakete, Spitze %.3f, %d Rahmen abgeholt, %d Samples verworfen\n",
+			jetzt.Format("15:04:05.000"), anzahl, hoechste, rahmen, verworfen)
 	}
 }
 
@@ -619,6 +635,9 @@ type sipQuelle struct{ b *sipBruecke }
 // nehmen, was da ist, Stille auffuellen, sofort zurueckkommen.
 func (q sipQuelle) ReadFrame() ([]float32, error) {
 	rahmen := make([]float32, rahmenSamples)
+	q.b.mu.Lock()
+	q.b.rahmen++
+	q.b.mu.Unlock()
 	if !q.b.vonTelefon.lesen(rahmen) {
 		q.b.luecke()
 	}
