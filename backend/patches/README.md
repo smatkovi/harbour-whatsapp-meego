@@ -150,6 +150,28 @@ nach oben ist hart gedeckelt (−46 dBFS), lieber zu leise als ein Zischen
 
 Im Backend an der Einstellung `call_cng`, standardmäßig aus.
 
+## Verzögerung: drei Puffer kürzer
+
+Die Gesamtverzögerung lag bei gut vier Zehntelsekunden je Richtung — ITU
+G.114 nennt 400 ms als Grenze des Erträglichen, 150 ms als unauffällig.
+Drei der Posten sind unsere:
+
+| Puffer | vorher | jetzt | wo |
+|---|---|---|---|
+| Jitterpuffer der SIP-Brücke | 120 ms | 60 ms | `sipbridge_meego.go` |
+| meowcallers Einlaufpuffer | 120 ms | 60 ms | `audio_playout.go` (Patch) |
+| `gstrtpbin` des Telefons | 100 ms | 40 ms | `/etc/stream-engine/gstelements.conf` |
+
+Zusammen 180 ms. Die beiden ersten fangen keine Netzschwankung auf — das
+RTP läuft über Loopback —, sondern nur die Schwankung der
+Rechenzeitzuteilung, und die ist seit dem schnelleren Kodierer klein.
+Beim dritten ist zu bedenken, dass er **alle** SIP-Anrufe des Geräts
+betrifft; die Sicherungskopie liegt daneben als
+`gstelements.conf.vor-latenz`.
+
+Nicht kürzbar: 60 ms Rahmenlänge (Format), 53 ms Kodieren (Rechenzeit),
+und was die Gegenseite tut.
+
 ## Was noch offen ist
 
 Die Grenze ist unterschritten, Reserve bleibt wenig: 12 % bei Sprache.

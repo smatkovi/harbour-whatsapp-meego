@@ -15,10 +15,12 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/emiago/sipgo/sip"
 )
 
 func TestSipQuelleTaktetNichtSelbst(t *testing.T) {
-	b := &sipBruecke{vonTelefon: neuerTonPuffer(rahmenSamples*6, rahmenSamples*2)}
+	b := &sipBruecke{vonTelefon: neuerTonPuffer(rahmenSamples*6, rahmenSamples*1)}
 	q := sipQuelle{b}
 
 	// Zehn Rahmen holen und die Zeit messen. Ohne eigene Taktung ist das
@@ -42,7 +44,7 @@ func TestSipQuelleTaktetNichtSelbst(t *testing.T) {
 // Ein halber Rahmen wird nicht halb ausgeliefert: genau das zerschnitt die
 // Woerter. Er bleibt liegen, bis er voll ist -- und kommt dann am Stueck.
 func TestSipQuelleZerschneidetNichts(t *testing.T) {
-	b := &sipBruecke{vonTelefon: neuerTonPuffer(rahmenSamples*6, rahmenSamples*2)}
+	b := &sipBruecke{vonTelefon: neuerTonPuffer(rahmenSamples*6, rahmenSamples*1)}
 	q := sipQuelle{b}
 
 	halb := make([]float32, rahmenSamples/2)
@@ -83,20 +85,23 @@ func TestSipQuelleZerschneidetNichts(t *testing.T) {
 // Vorlauf angesammelt hat -- sonst haengt sie am Rand des Leerlaufs und
 // jeder zweite Rahmen faellt aus.
 func TestSipQuelleSammeltNachEinerLuecke(t *testing.T) {
-	b := &sipBruecke{vonTelefon: neuerTonPuffer(rahmenSamples*6, rahmenSamples*2)}
+	b := &sipBruecke{vonTelefon: neuerTonPuffer(rahmenSamples*6, rahmenSamples*1)}
 	q := sipQuelle{b}
 
-	voll := make([]float32, rahmenSamples)
-	for i := range voll {
-		voll[i] = 0.25
+	// Ein halber Rahmen ist weniger als der Vorlauf: noch Stille.
+	halb := make([]float32, rahmenSamples/2)
+	for i := range halb {
+		halb[i] = 0.25
 	}
-	// Genau ein Rahmen: das ist weniger als der Vorlauf, also noch Stille.
-	b.vonTelefon.schreiben(voll)
+	b.vonTelefon.schreiben(halb)
 	rahmen, _ := q.ReadFrame()
 	if rahmen[0] != 0 {
 		t.Fatal("die Ausgabe lief ohne Vorlauf an")
 	}
-	b.vonTelefon.schreiben(voll)
+	// Auf einen vollen Rahmen aufgefuellt laeuft sie an -- der Vorlauf
+	// steht seit 3.10 bei einem Rahmen (60 ms) statt zweien, weil jede
+	// Millisekunde voll auf die Gesamtverzoegerung durchschlaegt.
+	b.vonTelefon.schreiben(halb)
 	rahmen, _ = q.ReadFrame()
 	if rahmen[0] != 0.25 {
 		t.Fatalf("erstes Sample %v, erwartet 0.25 -- der Vorlauf stand", rahmen[0])
@@ -154,7 +159,7 @@ func TestMuLawHinUndZurueck(t *testing.T) {
 // Mobilfunkverbindung (100.64.120.110, Carrier-NAT); dorthin ging alles
 // ueber den Router ins Netz hinaus, und der Anrufer war nicht zu hoeren.
 func TestZielFolgtDenPaketen(t *testing.T) {
-	b := &sipBruecke{vonTelefon: neuerTonPuffer(rahmenSamples*6, rahmenSamples*2)}
+	b := &sipBruecke{vonTelefon: neuerTonPuffer(rahmenSamples*6, rahmenSamples*1)}
 
 	// Was die SDP behauptet.
 	b.gegenstelleAusSDP("v=0\r\nc=IN IP4 100.64.120.110\r\nm=audio 7078 RTP/AVP 0\r\n")
@@ -179,5 +184,31 @@ func TestZielFolgtDenPaketen(t *testing.T) {
 	b.zielAktualisieren(&net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 7090})
 	if b.gegen.Port != 7090 {
 		t.Fatalf("Portwechsel nicht gefolgt: %v", b.gegen)
+	}
+}
+
+// Geklingelt wird dort, wo sich das Telefon gemeldet hat -- nicht unter der
+// Adresse, die es in den Kontakt schreibt. Am Mobilfunk steht dort die
+// Adresse aus dem Carrier-NAT, und ein INVITE dorthin verliesse das Geraet.
+func TestKontaktFolgtDerAnmeldung(t *testing.T) {
+	kontakt := sip.Uri{User: "whatsapp", Host: "100.64.120.110", Port: 5060}
+
+	ziel, geaendert := kontaktZiel(kontakt, "127.0.0.1:51294")
+	if !geaendert || ziel.Host != "127.0.0.1" || ziel.Port != 51294 {
+		t.Fatalf("Quelle nicht uebernommen: %v (geaendert=%v)", ziel, geaendert)
+	}
+	if ziel.User != "whatsapp" {
+		t.Fatalf("Benutzerteil verloren: %v", ziel)
+	}
+
+	// Stimmt beides ueberein, bleibt alles wie es ist.
+	gleich := sip.Uri{User: "whatsapp", Host: "127.0.0.1", Port: 51294}
+	if _, geaendert := kontaktZiel(gleich, "127.0.0.1:51294"); geaendert {
+		t.Fatal("unnoetig geaendert")
+	}
+
+	// Unbrauchbare Quelle laesst den Kontakt unangetastet.
+	if ziel, geaendert := kontaktZiel(kontakt, "keine-adresse"); geaendert || ziel.Host != "100.64.120.110" {
+		t.Fatalf("kaputte Quelle nicht ignoriert: %v", ziel)
 	}
 }

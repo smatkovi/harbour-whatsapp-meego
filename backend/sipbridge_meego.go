@@ -267,11 +267,18 @@ var bruecke *sipBruecke
 func sipBrueckeStarten() {
 	b := &sipBruecke{
 		// Hoechstens sechs Rahmen (360 ms) im Speicher, angelaufen wird
-		// mit zweien (120 ms). Frueher stand hier eine ganze Sekunde, und
+		// mit EINEM (60 ms).
+		//
+		// Der Vorlauf faengt hier keine Netzschwankung auf -- das RTP
+		// laeuft ueber Loopback --, sondern nur die Schwankung der
+		// Rechenzeitzuteilung, und die ist seit dem schnelleren Kodierer
+		// klein. Dafuer schlaegt jede Millisekunde voll auf die
+		// Gesamtverzoegerung durch, und die liegt ohnehin bei gut vier
+		// Zehntelsekunden je Richtung. Frueher stand hier eine ganze Sekunde, und
 		// weil genau so schnell gelesen wird, wie geschrieben wird, blieb
 		// jeder einmal entstandene Rueckstand fuer immer als Verzoegerung
 		// stehen -- aufholen kann die Leseseite ja nicht.
-		vonTelefon: neuerTonPuffer(rahmenSamples*6, rahmenSamples*2),
+		vonTelefon: neuerTonPuffer(rahmenSamples*6, rahmenSamples*1),
 		ssrc:       uint32(time.Now().UnixNano()),
 	}
 	ua, err := sipgo.NewUA(sipgo.WithUserAgent("harbour-whatsapp"))
@@ -333,15 +340,53 @@ func (b *sipBruecke) rtpOeffnen() error {
 	return nil
 }
 
+// kontaktZiel nimmt die Adresse, unter der sich das Telefon meldet, und
+// ersetzt Wirt und Port durch die Quelle der Anmeldung.
+//
+// Aus demselben Grund, aus dem der Ton dorthin geht, wo die Pakete
+// herkommen: das Telefon traegt in den Kontakt die Adresse einer seiner
+// Schnittstellen ein, und welche das ist, entscheidet es selbst. Im
+// WLAN steht dort 192.168.1.8 -- das geht gut, solange das WLAN steht.
+// Haengt es dagegen am Mobilfunk, steht dort dessen Adresse aus dem
+// Carrier-NAT, und unser INVITE ginge ueber den Router hinaus ins Netz
+// statt ueber die Loopback-Schnittstelle zum Telefon: es klingelte
+// einfach nicht. Angemeldet hat es sich aber ueber 127.0.0.1, und das
+// ist die Adresse, unter der es sicher erreichbar ist.
+//
+// Das ist nichts Exotisches: jeder Registrar macht das, es heisst dort
+// "received" und "rport".
+func kontaktZiel(kontakt sip.Uri, quelle string) (sip.Uri, bool) {
+	wirt, port, err := net.SplitHostPort(quelle)
+	if err != nil || wirt == "" {
+		return kontakt, false
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil || p <= 0 {
+		return kontakt, false
+	}
+	if kontakt.Host == wirt && kontakt.Port == p {
+		return kontakt, false
+	}
+	kontakt.Host, kontakt.Port = wirt, p
+	return kontakt, true
+}
+
 func (b *sipBruecke) beiRegister(req *sip.Request, tx sip.ServerTransaction) {
 	k := req.Contact()
 	if k != nil {
-		b.mu.Lock()
 		uri := k.Address
+		genannt := uri.String()
+		uri, geaendert := kontaktZiel(uri, req.Source())
+		b.mu.Lock()
 		b.kontakt = &uri
 		b.registriert = true
 		b.mu.Unlock()
-		fmt.Printf("📞 SIP: Telefon registriert als %s\n", uri.String())
+		if geaendert {
+			fmt.Printf("📞 SIP: Telefon nennt %s, meldet sich aber von %s -- wir klingeln dort\n",
+				genannt, uri.String())
+		} else {
+			fmt.Printf("📞 SIP: Telefon registriert als %s\n", uri.String())
+		}
 	}
 	antwort := sip.NewResponseFromRequest(req, 200, "OK", nil)
 	// Die Registrierung lange genug halten, dass das Telefon nicht staendig
