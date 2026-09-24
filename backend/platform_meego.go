@@ -99,6 +99,41 @@ func sipAnruf(name, nummer string, beiAnnahme, beiAuflegen func()) (meowcallerQu
 	return sipQuelle{bruecke}, sipSenke{bruecke}, true
 }
 
+func init() { sipWaehler = anrufVomTelefon }
+
+// anrufVomTelefon fuehrt einen Anruf, den die Telefon-App des Geraets
+// gewaehlt hat, als WhatsApp-Anruf -- und uebersetzt dessen Fortgang
+// zurueck in die Sprache von SIP.
+//
+// Damit bekommen ausgehende Anrufe dieselbe systemeigene Anrufansicht wie
+// eingehende, und der Weg ueber PulseAudio entfaellt fuer sie ganz.
+func anrufVomTelefon(nummer string, r sipRueckmeldung) error {
+	_, err := startCallMit(nummer, func(phase string) {
+		switch {
+		case phase == "calling" || phase == "ringing":
+			if r.Klingelt != nil {
+				r.Klingelt()
+			}
+		case phase == "angenommen":
+			// Erst das 200 OK ans Telefon -- danach steht die Bruecke,
+			// und der Ton kann daran haengen. Die Reihenfolge ist nicht
+			// beliebig: startAudio sieht nach, ob die Verbindung zum
+			// Telefon schon laeuft, und kehrt sonst wirkungslos zurueck.
+			if r.Angenommen != nil {
+				r.Angenommen()
+			}
+			if s := currentCall(); s != nil {
+				s.startAudio()
+			}
+		case strings.HasPrefix(phase, "ende:"):
+			if r.Beendet != nil {
+				r.Beendet(strings.TrimPrefix(phase, "ende:"))
+			}
+		}
+	})
+	return err
+}
+
 // sipLaeuft sagt, ob gerade ein SIP-Gespraech steht -- dann sind die
 // Tonenden schon da und es waere falsch, ein zweites Mal zu klingeln.
 func sipLaeuft() bool {

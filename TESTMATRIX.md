@@ -224,6 +224,10 @@ machte.
 | A73 | halber Rahmen im Puffer | vorne die Samples, hinten Stille, immer volle Rahmenlänge |
 | A74 | zehn Rahmen in den Puffer schreiben | es bleiben drei stehen, verworfen wird das **Älteste** |
 | A75 | µ-law hin und zurück | Abstand unter 1/8 des Werts, kein Vorzeichenfehler |
+| A76 | `+43 650 …`, `0043…`, mit Bindestrichen | Ziffern, international, ohne Plus |
+| A77 | nationale Nummer mit führender Null | bleibt stehen — lieber sichtbar scheitern als jemand Falschen anrufen |
+| A78 | Ziel folgt den Paketen, nicht der SDP | Wechsel auf die Quelladresse, Portwechsel wird nachgezogen |
+| A79 | Kontakt folgt der Anmeldung | Wirt und Port aus der Quelle des REGISTER, Benutzerteil bleibt |
 
 ---
 
@@ -258,6 +262,9 @@ Ergebnis erkennt, ohne raten zu müssen.
 | G22 | Eingehender Anruf: die Gegenseite hört mich | Anruf annehmen, sprechen | Gegenseite hört durchgehend | `📞 SIP: Telefonmikrofon … Spitze` im Protokoll, Spitze deutlich über 0 — steht dort nichts, schickt das Telefon gar kein RTP, und die Ursache liegt vor der Brücke |
 | G23 | Ausgehender Anruf, App **zu** | `curl "http://127.0.0.1:8085/call/start?jid=<Nummer>"` über ssh | Verbindung kommt zustande | `relay DataChannel open`, kein `relay connect timed out` |
 | G24 | Ausgehender Anruf, App **offen** | dasselbe aus der App | wie G23 | scheitert nur hier, liegt es an der Last: App und Backend teilen sich einen Kern |
+| G25 | Wählen aus der Telefon-App | in der Anrufansicht das WhatsApp-Konto wählen, internationale Nummer | Anrufansicht des Geräts zeigt „wählt", dann Gespräch | `SIP: Telefon waehlt` und `SIP: Telefon telefoniert` im Protokoll, **kein** `pulseaudio` |
+| G26 | Der Angerufene hebt nicht ab | wie G25, warten | Anrufansicht beendet sich von selbst | `SIP: Anruf beendet` mit Grund |
+| G27 | Auflegen in der Telefon-App | wie G25, dann auflegen | WhatsApp-Anruf endet mit | kein zweiter Anruf hängt nach (`call … ended`) |
 
 ---
 

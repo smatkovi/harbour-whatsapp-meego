@@ -252,6 +252,12 @@ type sipBruecke struct {
 	// unterscheiden.
 	hinaus uint64
 
+	// Die andere Richtung: das Telefon waehlt, wir fuehren den Anruf.
+	ds            *sipgo.DialogServerCache
+	serverSitzung *sipgo.DialogServerSession
+	// Steht ein Gespraech, das vom Telefon aus gewaehlt wurde?
+	gewaehlt bool
+
 	// Wird gerufen, wenn das Telefon auflegt (BYE) oder ablehnt.
 	beiAuflegen func()
 	// Wird gerufen, sobald das Telefon abgehoben hat. Erst dann darf der
@@ -260,6 +266,22 @@ type sipBruecke struct {
 }
 
 var bruecke *sipBruecke
+
+// sipWaehler fuehrt einen WhatsApp-Anruf, den das Telefon gewaehlt hat.
+// Gesetzt wird er von platform_meego.go; die Bruecke selbst kennt
+// meowcaller nicht.
+//
+// Die Rueckmeldungen uebersetzen den Fortgang des WhatsApp-Anrufs in die
+// Sprache von SIP: klingelt es beim Angerufenen, geht ein 180 hinaus;
+// hebt er ab, ein 200 mit unserem SDP; und endet der Anruf, ein BYE oder
+// eine Absage.
+type sipRueckmeldung struct {
+	Klingelt   func()
+	Angenommen func()
+	Beendet    func(grund string)
+}
+
+var sipWaehler func(nummer string, r sipRueckmeldung) error
 
 // sipBrueckeStarten oeffnet den lokalen SIP-Server. Fehler sind nicht toedlich:
 // ohne Bruecke laeuft alles wie bisher, nur eben ohne Klingeln am
@@ -301,12 +323,25 @@ func sipBrueckeStarten() {
 	b.dc = sipgo.NewDialogClientCache(b.cl,
 		sip.ContactHeader{Address: sip.Uri{User: "whatsapp", Host: sipHost, Port: sipPort}})
 
+	// Die Server-Seite der Dialoge: hier kommen die INVITEs an, die das
+	// Telefon selbst waehlt.
+	b.ds = sipgo.NewDialogServerCache(b.cl,
+		sip.ContactHeader{Address: sip.Uri{User: "whatsapp", Host: sipHost, Port: sipPort}})
+
 	b.srv.OnRegister(b.beiRegister)
+	b.srv.OnInvite(b.beiInvite)
 	// BYE und CANCEL laufen ueber die Dialogschicht; hier bleibt nur die
 	// Antwort, damit das Telefon nicht wiederholt.
 	b.srv.OnBye(b.beiBye)
 	b.srv.OnCancel(b.beiBye)
-	b.srv.OnAck(func(req *sip.Request, tx sip.ServerTransaction) {})
+	b.srv.OnAck(func(req *sip.Request, tx sip.ServerTransaction) {
+		b.mu.Lock()
+		ss := b.serverSitzung
+		b.mu.Unlock()
+		if ss != nil {
+			_ = ss.ReadAck(req, tx)
+		}
+	})
 	// sofiasip schickt OPTIONS als Lebenszeichen an den Registrar. Bleibt
 	// das unbeantwortet, haelt es die Bruecke irgendwann fuer tot und wirft
 	// die Registrierung weg -- dann klingelt nichts mehr, ohne dass man
@@ -395,11 +430,147 @@ func (b *sipBruecke) beiRegister(req *sip.Request, tx sip.ServerTransaction) {
 	_ = tx.Respond(antwort)
 }
 
+// nummerNormalisieren macht aus dem, was die Telefon-App waehlt, die Form,
+// die WhatsApp kennt: nur Ziffern, international, ohne Pluszeichen.
+//
+// Die Anrufansicht gibt je nach Eingabe "+436509917350", "00436509917350"
+// oder Ziffern mit Leerzeichen und Bindestrichen weiter. Eine nationale
+// Nummer mit fuehrender Null koennen wir nicht aufloesen -- dazu muesste
+// man die Landesvorwahl raten -- die bleibt, wie sie ist, und scheitert
+// dann sichtbar statt still jemand Falschen anzurufen.
+func nummerNormalisieren(gewaehlt string) string {
+	var ziffern strings.Builder
+	for _, r := range gewaehlt {
+		if r >= '0' && r <= '9' {
+			ziffern.WriteRune(r)
+		}
+	}
+	n := ziffern.String()
+	if strings.HasPrefix(gewaehlt, "+") {
+		return n
+	}
+	if strings.HasPrefix(n, "00") {
+		return n[2:]
+	}
+	return n
+}
+
+// beiInvite nimmt einen Anruf entgegen, den das Telefon selbst gewaehlt
+// hat, und fuehrt ihn als WhatsApp-Anruf.
+//
+// Das Konto des Telefons zeigt mit proxy-host=127.0.0.1 auf uns: jeder
+// Anruf, den man in der Telefon-App ueber dieses Konto waehlt, landet als
+// INVITE hier. Damit bekommen ausgehende Anrufe dieselbe systemeigene
+// Anrufansicht wie eingehende -- Hoermuschel, Naeherungssensor,
+// Sperrbildschirm, Lautstaerketasten -- und der Weg ueber PulseAudio
+// entfaellt fuer sie ganz. Genau dort sassen die haertesten Fehler.
+func (b *sipBruecke) beiInvite(req *sip.Request, tx sip.ServerTransaction) {
+	gewaehlt := req.Recipient.User
+	nummer := nummerNormalisieren(gewaehlt)
+	fmt.Printf("📞 SIP: Telefon waehlt %q -> %s\n", gewaehlt, nummer)
+
+	if sipWaehler == nil || nummer == "" {
+		_ = tx.Respond(sip.NewResponseFromRequest(req, 404, "Not Found", nil))
+		return
+	}
+	b.mu.Lock()
+	besetzt := b.laeuft || b.serverSitzung != nil || b.sitzung != nil
+	b.mu.Unlock()
+	if besetzt {
+		_ = tx.Respond(sip.NewResponseFromRequest(req, 486, "Busy Here", nil))
+		return
+	}
+
+	sitzung, err := b.ds.ReadInvite(req, tx)
+	if err != nil {
+		fmt.Println("📞 SIP: INVITE nicht lesbar:", err)
+		_ = tx.Respond(sip.NewResponseFromRequest(req, 400, "Bad Request", nil))
+		return
+	}
+	// Wohin der Ton geht, sagt uns die SDP des Telefons -- und danach
+	// sowieso die Quelle seiner Pakete.
+	b.gegenstelleAusSDP(string(req.Body()))
+	b.mu.Lock()
+	b.serverSitzung = sitzung
+	b.gewaehlt = true
+	b.angenommen = false
+	b.pakete, b.spitze, b.gemeldet = 0, 0, time.Time{}
+	b.luecken, b.lueckeGemeldet = 0, time.Time{}
+	b.verworfen, b.rahmen, b.hinaus = 0, 0, 0
+	b.vonTelefon.zuruecksetzen()
+	b.mu.Unlock()
+
+	_ = sitzung.Respond(sip.StatusTrying, "Trying", nil)
+
+	fertig := func(code int, grund string) {
+		b.mu.Lock()
+		ss, stand := b.serverSitzung, b.angenommen
+		b.serverSitzung, b.gewaehlt, b.laeuft, b.angenommen = nil, false, false, false
+		b.mu.Unlock()
+		if ss == nil {
+			return
+		}
+		if stand {
+			// Steht das Gespraech, wird es beendet; sonst abgesagt.
+			_ = ss.Bye(context.Background())
+		} else {
+			_ = ss.Respond(code, grund, nil)
+		}
+		_ = ss.Close()
+	}
+
+	err = sipWaehler(nummer, sipRueckmeldung{
+		Klingelt: func() {
+			_ = sitzung.Respond(sip.StatusRinging, "Ringing", nil)
+		},
+		Angenommen: func() {
+			// Erst hier, keinen Augenblick frueher: ein 200 OK sagt dem
+			// Telefon, das Gespraech stehe. Kaeme es, bevor der
+			// Angerufene abgehoben hat, redete man ins Leere.
+			if err := sitzung.RespondSDP([]byte(b.sdp())); err != nil {
+				fmt.Println("📞 SIP: 200 OK:", err)
+				return
+			}
+			b.mu.Lock()
+			b.laeuft = true
+			b.angenommen = true
+			b.mu.Unlock()
+			fmt.Println("📞 SIP: Telefon telefoniert, Ton laeuft")
+		},
+		Beendet: func(grund string) {
+			fmt.Printf("📞 SIP: Anruf beendet (%s)\n", grund)
+			switch grund {
+			case "reject", "declined":
+				fertig(sip.StatusBusyHere, "Busy Here")
+			case "timeout", "no-answer":
+				fertig(sip.StatusRequestTimeout, "Request Timeout")
+			default:
+				fertig(sip.StatusTemporarilyUnavailable, "Unavailable")
+			}
+		},
+	})
+	if err != nil {
+		fmt.Println("📞 SIP: Anruf nicht moeglich:", err)
+		fertig(sip.StatusServiceUnavailable, "Service Unavailable")
+	}
+}
+
 func (b *sipBruecke) beiBye(req *sip.Request, tx sip.ServerTransaction) {
-	_ = tx.Respond(sip.NewResponseFromRequest(req, 200, "OK", nil))
+	b.mu.Lock()
+	ss := b.serverSitzung
+	b.mu.Unlock()
+	if ss != nil {
+		// Ein vom Telefon gewaehltes Gespraech: die Dialogschicht
+		// beantwortet das BYE selbst.
+		_ = ss.ReadBye(req, tx)
+	} else {
+		_ = tx.Respond(sip.NewResponseFromRequest(req, 200, "OK", nil))
+	}
 	b.mu.Lock()
 	f := b.beiAuflegen
 	b.laeuft = false
+	b.serverSitzung = nil
+	b.gewaehlt = false
 	b.mu.Unlock()
 	fmt.Println("📞 SIP: Telefon hat aufgelegt")
 	if f != nil {
@@ -504,6 +675,31 @@ func (b *sipBruecke) klingeln(name, nummer string, beiAnnahme, beiAuflegen func(
 
 // auflegen beendet die SIP-Seite, wenn der Anruf auf der WhatsApp-Seite endet.
 func (b *sipBruecke) auflegen() {
+	// Zuerst die Server-Seite: ein Gespraech, das das Telefon gewaehlt
+	// hat. Beide Wege raeumen unter derselben Sperre ab und setzen die
+	// Sitzung auf nil, deshalb macht ein zweiter Aufruf nichts mehr --
+	// und zweimal aufgerufen wird hier oefter, einmal vom Ende des
+	// WhatsApp-Anrufs und einmal von der Aufraeumung daneben.
+	b.mu.Lock()
+	ss := b.serverSitzung
+	stand := b.angenommen
+	b.serverSitzung = nil
+	b.gewaehlt = false
+	b.mu.Unlock()
+	if ss != nil {
+		if stand {
+			_ = ss.Bye(context.Background())
+		} else {
+			_ = ss.Respond(sip.StatusTemporarilyUnavailable, "Unavailable", nil)
+		}
+		_ = ss.Close()
+		b.mu.Lock()
+		b.laeuft = false
+		b.angenommen = false
+		b.mu.Unlock()
+		fmt.Println("📞 SIP: Gespraech mit dem Telefon beendet")
+	}
+
 	b.mu.Lock()
 	s := b.sitzung
 	abbrechen := b.abbruch

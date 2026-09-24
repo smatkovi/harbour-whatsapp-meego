@@ -111,8 +111,13 @@ type callSession struct {
 	// Laeuft gerade ein Versuch, PulseAudio zu oeffnen? Ohne die Marke
 	// wuerden Anrufaufbau und OnReady zwei Versuche nebeneinander starten.
 	audioOeffnet bool
-	notifID      uint32
-	mu           sync.Mutex
+	// Kam der Anruf aus der Telefon-App des Geraets (ueber die
+	// SIP-Bruecke gewaehlt)? Dann laeuft der Ton dort, nicht ueber
+	// PulseAudio, und jeder Phasenwechsel wird gemeldet.
+	vomTelefon bool
+	beiPhase   func(string)
+	notifID    uint32
+	mu         sync.Mutex
 }
 
 // dtxSetzen schaltet die beiden Sprechpausen-Einstellungen scharf:
@@ -246,6 +251,14 @@ func callHandledLocally(id string) bool {
 	return callSeen[id]
 }
 
+// phasenMelder gibt den Melder fuer die SIP-Bruecke, wenn der Anruf von
+// der Telefon-App gewaehlt wurde.
+func (s *callSession) phasenMelder() func(string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.beiPhase
+}
+
 // phase reads the lifecycle phase under the session lock.
 func (s *callSession) phase() string {
 	s.mu.Lock()
@@ -368,6 +381,9 @@ func (s *callSession) wire() {
 		if name == "active" {
 			mceCallState("active")
 		}
+		if f := s.phasenMelder(); f != nil {
+			f(name)
+		}
 		fmt.Printf("📞 call %s: %s\n", s.ID, name)
 		bumpEvent()
 	})
@@ -378,6 +394,9 @@ func (s *callSession) wire() {
 			s.audio.SetRingback(false)
 		}
 		s.mu.Unlock()
+		if f := s.phasenMelder(); f != nil {
+			f("angenommen")
+		}
 		closeCallNotification(s)
 		bumpEvent()
 	})
@@ -397,7 +416,12 @@ func (s *callSession) wire() {
 		mceCallState("active")
 		bumpEvent()
 	})
-	c.OnEnd(func(reason string) { s.finish(reason) })
+	c.OnEnd(func(reason string) {
+		if f := s.phasenMelder(); f != nil {
+			f("ende:" + reason)
+		}
+		s.finish(reason)
+	})
 }
 
 func (s *callSession) startAudio() {
@@ -420,7 +444,28 @@ func (s *callSession) startAudio() {
 	// gerade selbst gewaehlt; der laeuft ueber die Anrufseite der App.
 	s.mu.Lock()
 	eingehend := !s.Outgoing
+	vomTelefon := s.vomTelefon
 	s.mu.Unlock()
+
+	// Von der Telefon-App gewaehlt: der Ton gehoert der Anrufansicht des
+	// Geraets. PulseAudio kommt hier nie ins Spiel -- und damit auch
+	// nichts von dem, was dort schiefgehen kann. Steht die Verbindung zum
+	// Telefon noch nicht (das 200 OK geht erst hinaus, wenn der
+	// Angerufene abgehoben hat), kommt dieser Aufruf gleich noch einmal.
+	if vomTelefon {
+		if !sipLaeuft() {
+			return
+		}
+		quelle, senke := sipStroeme()
+		s.mu.Lock()
+		s.usesSip = true
+		s.mu.Unlock()
+		s.call.Receive(senke)
+		s.call.Play(quelle)
+		fmt.Println("📞 SIP: Ton an das gewaehlte Gespraech gehaengt")
+		bumpEvent()
+		return
+	}
 
 	// Bei einem eingehenden Anruf hat onIncomingCall die Bruecke schon
 	// gerufen, und das Telefon hat abgehoben -- die Tonenden stehen also
@@ -938,6 +983,16 @@ func onIncomingCall(call *meowcaller.Call) {
 }
 
 func startCall(user string) (*callSession, error) {
+	return startCallMit(user, nil)
+}
+
+// startCallMit legt einen ausgehenden Anruf an. Ist beiPhase gesetzt, kam
+// er aus der Telefon-App des Geraets ueber die SIP-Bruecke: dann laeuft
+// der Ton dort statt ueber PulseAudio, es gibt keinen selbstgebauten
+// Freiton (das Telefon macht seinen eigenen), und jeder Phasenwechsel
+// wird zurueckgemeldet, damit die Bruecke daraus 180, 200 oder BYE machen
+// kann.
+func startCallMit(user string, beiPhase func(string)) (*callSession, error) {
 	if callClient == nil || client == nil || !isConnected {
 		return nil, fmt.Errorf("not connected")
 	}
@@ -974,6 +1029,8 @@ func startCall(user string) (*callSession, error) {
 		return nil, err
 	}
 	s := newCallSession(call, true)
+	s.beiPhase = beiPhase
+	s.vomTelefon = beiPhase != nil
 	if s.Peer == "" || s.PeerIsLid && !strings.Contains(user, "@") {
 		// keep the number the user dialled as the chat key
 		s.Peer = user

@@ -212,3 +212,24 @@ func TestKontaktFolgtDerAnmeldung(t *testing.T) {
 		t.Fatalf("kaputte Quelle nicht ignoriert: %v", ziel)
 	}
 }
+
+// Was die Telefon-App waehlt, muss in der Form ankommen, die WhatsApp
+// kennt: Ziffern, international, ohne Pluszeichen. Eine nationale Nummer
+// koennen wir nicht aufloesen -- die bleibt stehen und scheitert sichtbar,
+// statt still jemand Falschen anzurufen.
+func TestNummerNormalisieren(t *testing.T) {
+	faelle := []struct{ gewaehlt, erwartet string }{
+		{"+436509917350", "436509917350"},
+		{"00436509917350", "436509917350"},
+		{"+43 650 991 73 50", "436509917350"},
+		{"+43-650-9917350", "436509917350"},
+		{"436509917350", "436509917350"},
+		{"06509917350", "06509917350"}, // national, unveraendert
+		{"", ""},
+	}
+	for _, f := range faelle {
+		if got := nummerNormalisieren(f.gewaehlt); got != f.erwartet {
+			t.Errorf("%q -> %q, erwartet %q", f.gewaehlt, got, f.erwartet)
+		}
+	}
+}
