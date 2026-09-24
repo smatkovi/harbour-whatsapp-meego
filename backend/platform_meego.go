@@ -318,6 +318,75 @@ func sipKontoAnstossen() {
 	}
 }
 
+// plattformTelefonWaehlt bittet die Telefonieschicht des Geraets, die
+// Nummer ueber das SIP-Konto anzurufen -- und dreht damit die Richtung um.
+//
+// Der naheliegende Weg waere, das Telefon einzuladen (ein INVITE von uns).
+// Fuer die Anrufansicht ist das aber ein EINGEHENDER Anruf: man tippt in
+// WhatsApp auf "anrufen", und das eigene Telefon klingelt mit dem Namen
+// dessen, den man gerade anrufen wollte. Bittet stattdessen die App die
+// Telefonieschicht zu waehlen, ist es fuer das Geraet ein echter
+// ausgehender Anruf -- richtige Ansicht, kein Klingeln, kein zweites
+// Antippen -- und bei uns landet er als INVITE, das die Bruecke seit
+// jeher beantwortet.
+//
+// Gewaehlt wird ueber den ChannelDispatcher von Mission Control, denselben
+// Weg, den die Anrufansicht selbst nimmt.
+func plattformTelefonWaehlt(nummer string) bool {
+	if bruecke == nil || nummer == "" {
+		return false
+	}
+	bruecke.mu.Lock()
+	bereit := bruecke.registriert
+	bruecke.mu.Unlock()
+	if !bereit {
+		return false
+	}
+	conn, err := dbus.SessionBus()
+	if err != nil {
+		return false
+	}
+	verwalter := conn.Object("org.freedesktop.Telepathy.AccountManager",
+		dbus.ObjectPath("/org/freedesktop/Telepathy/AccountManager"))
+	var konten dbus.Variant
+	if err := verwalter.Call("org.freedesktop.DBus.Properties.Get", 0,
+		"org.freedesktop.Telepathy.AccountManager", "ValidAccounts").Store(&konten); err != nil {
+		fmt.Printf("📞 SIP: Kontenliste: %v\n", err)
+		return false
+	}
+	pfade, _ := konten.Value().([]dbus.ObjectPath)
+	var konto dbus.ObjectPath
+	for _, p := range pfade {
+		if strings.Contains(string(p), "sofiasip/sip/whatsapp") {
+			konto = p
+			break
+		}
+	}
+	if konto == "" {
+		fmt.Println("📞 SIP: kein sofiasip-Konto gefunden")
+		return false
+	}
+
+	const kanal = "org.freedesktop.Telepathy.Channel"
+	anfrage := map[string]dbus.Variant{
+		kanal + ".ChannelType":                     dbus.MakeVariant(kanal + ".Type.StreamedMedia"),
+		kanal + ".TargetHandleType":                dbus.MakeVariant(uint32(1)), // Kontakt
+		kanal + ".TargetID":                        dbus.MakeVariant("sip:" + nummer + "@whatsapp.local"),
+		kanal + ".Type.StreamedMedia.InitialAudio": dbus.MakeVariant(true),
+	}
+	verteiler := conn.Object("org.freedesktop.Telepathy.ChannelDispatcher",
+		dbus.ObjectPath("/org/freedesktop/Telepathy/ChannelDispatcher"))
+	var pfad dbus.ObjectPath
+	if err := verteiler.Call(
+		"org.freedesktop.Telepathy.ChannelDispatcher.EnsureChannel", 0,
+		konto, anfrage, int64(0), "").Store(&pfad); err != nil {
+		fmt.Printf("📞 SIP: das Telefon waehlt nicht: %v\n", err)
+		return false
+	}
+	fmt.Printf("📞 SIP: Telefon soll %s waehlen (%s)\n", nummer, pfad)
+	return true
+}
+
 // --- Klingelmeldung ------------------------------------------------------
 //
 // Der Benachrichtigungsdienst von Harmattan heisst nicht

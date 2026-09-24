@@ -60,9 +60,9 @@ func TestReplyOnlyForKnownSenders(t *testing.T) {
 	contacts["5184193331367"] = ""
 	contactsMutex.Unlock()
 	out := annotateSenders([]Message{
-		{Sender: "436781311768"},   // im Adressbuch
-		{Sender: "5184193331367"},  // leerer Name zaehlt nicht
-		{Sender: "436603708434"},   // plausible Nummer, aber unbekannt
+		{Sender: "436781311768"},  // im Adressbuch
+		{Sender: "5184193331367"}, // leerer Name zaehlt nicht
+		{Sender: "436603708434"},  // plausible Nummer, aber unbekannt
 	})
 	if !out[0].SenderKnown {
 		t.Error("bekannter Kontakt nicht als bekannt gemeldet")
@@ -95,5 +95,24 @@ func TestAnnotateSendersLeavesOwnAlone(t *testing.T) {
 	// Die Eingabe darf nicht veraendert werden
 	if in[1].SenderIsLid {
 		t.Error("annotateSenders hat die gespeicherte Nachricht veraendert")
+	}
+}
+
+// Was startCall als Rufnummer nehmen wuerde, muss auch fuer die
+// Anrufansicht des Geraets herauskommen -- und was sich nicht aufloesen
+// laesst, gar nichts, statt auf gut Glueck jemanden anzurufen.
+func TestNummerFuerAnruf(t *testing.T) {
+	faelle := []struct{ jid, erwartet string }{
+		{"436509917350", "436509917350"},
+		{"436509917350@s.whatsapp.net", "436509917350"},
+		{"46626349572344@lid", ""}, // ohne Zuordnung nicht anwaehlbar
+		{"4366-651-7141", ""},      // keine blanke Nummer
+		{"", ""},
+		{"1234567890123456", ""}, // laenger als E.164 erlaubt
+	}
+	for _, f := range faelle {
+		if got := nummerFuerAnruf(f.jid); got != f.erwartet {
+			t.Errorf("%q -> %q, erwartet %q", f.jid, got, f.erwartet)
+		}
 	}
 }

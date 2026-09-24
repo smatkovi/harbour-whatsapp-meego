@@ -982,6 +982,35 @@ func onIncomingCall(call *meowcaller.Call) {
 	bumpEvent()
 }
 
+// nummerFuerAnruf macht aus dem, was die Oberflaeche schickt, die blanke
+// Telefonnummer fuer die Anrufansicht des Geraets.
+//
+// Dieselbe Aufloesung wie in startCall, und das mit Absicht: was startCall
+// als Rufnummer nehmen wuerde, nimmt auch das Telefon. Eine LID, die sich
+// nicht aufloesen laesst, gibt es als Rufnummer nicht -- dann bleibt nur
+// der eigene Weg, statt auf gut Glueck jemanden anzurufen.
+func nummerFuerAnruf(jid string) string {
+	nutzer := jid
+	if i := strings.IndexByte(nutzer, '@'); i >= 0 {
+		server := nutzer[i+1:]
+		nutzer = nutzer[:i]
+		if server == types.HiddenUserServer {
+			nutzer = telefonnummerFuerLID(nutzer)
+		}
+	} else if nummer := telefonnummerFuerLID(nutzer); nummer != "" {
+		nutzer = nummer
+	}
+	if nutzer == "" || len(nutzer) > 15 {
+		return ""
+	}
+	for _, r := range nutzer {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	return nutzer
+}
+
 func startCall(user string) (*callSession, error) {
 	return startCallMit(user, nil)
 }
@@ -1228,6 +1257,24 @@ func registerCallHandlers() {
 		if jid == "" {
 			writeCallJSON(w, map[string]interface{}{"error": "jid required"})
 			return
+		}
+		// Erst das Telefon fragen, ob es waehlen mag.
+		//
+		// Dann fuehrt die Anrufansicht des Geraets das Gespraech: Hoermuschel,
+		// Naeherungssensor, Lautstaerketasten am Gespraech statt am Klingelton
+		// -- und der ganze Weg ueber PulseAudio entfaellt, in dem die
+		// haertesten Fehler dieses Ports sassen. Der Anruf kommt als INVITE
+		// zurueck und wird dort angelegt; hier wird nur gewartet, bis er da
+		// ist. Bleibt er aus, gehen wir den eigenen Weg.
+		if nummer := nummerFuerAnruf(jid); plattformTelefonWaehlt(nummer) {
+			for i := 0; i < 40; i++ {
+				if currentCall() != nil {
+					writeCallJSON(w, map[string]interface{}{"ok": true, "ueberTelefon": true})
+					return
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+			fmt.Println("📞 SIP: das Telefon hat nicht gewaehlt - eigener Weg")
 		}
 		if _, err := startCall(jid); err != nil {
 			writeCallJSON(w, map[string]interface{}{"error": "Call failed: " + err.Error()})

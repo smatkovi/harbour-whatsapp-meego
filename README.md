@@ -17,8 +17,14 @@ geschrieben, weil Silica auf Harmattan nicht existiert.
 * Profilbilder, Gruppen, Mitgliederliste einer Gruppe mit dem Weg in den
   Einzelchat
 * Ältere Nachrichten vom Haupttelefon nachladen
-* Sprachanrufe, wahlweise über eine eingebaute SIP-Brücke: dann klingelt es
-  in der systemeigenen Anrufansicht, auch am Sperrbildschirm
+* Sprachanrufe über eine eingebaute SIP-Brücke, in **beide** Richtungen:
+  eingehende klingeln in der systemeigenen Anrufansicht, auch am
+  Sperrbildschirm; ausgehende wählt die Telefon-App selbst — entweder
+  direkt dort über das WhatsApp-Konto, oder aus einem Chat heraus, dann
+  bittet die App die Telefonieschicht zu wählen. So gehört das Gespräch
+  der Anrufansicht: Hörmuschel, Näherungssensor, Lautstärketasten. Nur
+  wenn kein Telefon angemeldet ist, läuft der Ton über PulseAudio in der
+  App
 * **Integration in die Nachrichten-App**: WhatsApp-Chats erscheinen neben
   SMS, Telegram und Matrix (siehe unten)
 * Das Backend läuft als Dienst weiter, wenn die App zu ist, und verbindet
@@ -71,8 +77,11 @@ Qt zu exportieren.
 ## Was nicht geht
 
 * **Die Lautstärketasten stellen im Gespräch den Klingelton**, nicht die
-  Gesprächslautstärke. Dafür müsste sich die App über `com.nokia.mce` als
-  Anruf anmelden, und das verweigert der Bus unsignierten Paketen.
+  Gesprächslautstärke — solange der Anruf über PulseAudio läuft. Dafür
+  müsste sich die App über `com.nokia.mce` als Anruf anmelden, und das
+  verweigert der Bus unsignierten Paketen. Läuft der Anruf dagegen über
+  die Anrufansicht des Geräts (der Normalfall, seit die Telefon-App
+  wählt), regeln sie das Gespräch.
 * Die Nachrichtendatenbank liegt unverschlüsselt (Modus 0600). Auf Sailfish
   übernimmt das Sailfish Secrets; auf Harmattan gibt es keinen
   Schlüsseldienst, hinter dem ein Schlüssel besser aufgehoben wäre als in

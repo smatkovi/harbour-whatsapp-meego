@@ -72,3 +72,7 @@ func plattformMeldungSchliessen(id uint32) bool { return false }
 
 // Auf Sailfish geht der Anrufzustand direkt ueber den Bus.
 func plattformAnrufZustand(zustand string) bool { return false }
+
+// Auf Sailfish waehlt die Telefon-App nicht fuer uns -- es gibt keine
+// SIP-Bruecke, ueber die der Anruf zurueckkaeme.
+func plattformTelefonWaehlt(nummer string) bool { return false }
