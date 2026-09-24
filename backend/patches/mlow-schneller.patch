@@ -1,0 +1,525 @@
+diff -ruN meowcaller-rein/mlow/celp_enc.go meowcaller-fix/mlow/celp_enc.go
+--- a/mlow/celp_enc.go	2026-09-24 21:21:49.158789638 +0200
++++ b/mlow/celp_enc.go	2026-09-24 21:20:38.069853173 +0200
+@@ -97,9 +97,14 @@
+ 
+ func celpDotProd(a, b []float32, l int) float32 {
+ 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/ed12f359a086b28e807ba236f0977af1000859fe/wacore/src/voip/mlow/smpl_celp.rs#L202-L208
++	// Als Ausschnitte fester Laenge statt als Indexzugriffe: dann prueft
++	// der Uebersetzer die Grenzen einmal statt in jeder Runde. Dieselbe
++	// Rechnung, nur ohne die Pruefung im heissesten Kern des Kodierers.
++	x := a[:l]
++	y := b[:l]
+ 	var r float32
+-	for i := 0; i < l; i++ {
+-		r += a[i] * b[i]
++	for i, v := range x {
++		r += v * y[i]
+ 	}
+ 	return r
+ }
+@@ -285,9 +290,32 @@
+ 	return i
+ }
+ 
++var merkfelder sync.Pool
++
++func merkfeld(n int) []bool {
++	if v := merkfelder.Get(); v != nil {
++		f := v.([]bool)
++		if len(f) >= n {
++			f = f[:n]
++			for i := range f {
++				f[i] = false
++			}
++			return f
++		}
++	}
++	return make([]bool, n)
++}
++
++func merkfeldZurueck(f []bool) { merkfelder.Put(f[:cap(f)]) }
++
+ func celpGetMaxiK(x []float32, idx []int32, xLen, k int) {
+ 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/ed12f359a086b28e807ba236f0977af1000859fe/wacore/src/voip/mlow/smpl_celp.rs#L445-L462
+-	taken := make([]bool, xLen)
++	// Das Merkfeld wird wiederverwendet: celpGetMaxiK steckt in der
++	// innersten Schleife der Pulssuche, und ein neues Feld je Aufruf
++	// hielt den Sammler beschaeftigt (procyield und scanblock standen mit
++	// 13 % im Profil).
++	taken := merkfeld(xLen)
++	defer merkfeldZurueck(taken)
+ 	for kk := 0; kk < k; kk++ {
+ 		var best float32 = -math.MaxFloat32
+ 		bi := 0
+@@ -765,30 +793,40 @@
+ 	ri := sc.readIdx
+ 	wi := sc.writeIdx
+ 
++	// Die beiden Zustaende einmal greifen, nicht in jeder Schleifenrunde.
++	//
++	// Vorher stand in jeder Zeile ziel.num[i] -- das sind
++	// drei Indizierungen mit je einer Bereichspruefung, achtzig Mal je
++	// Puls, und Pulse werden tausendfach probiert. Als Ausschnitt fester
++	// Laenge kann der Uebersetzer die Pruefung herausziehen.
++	ziel := &sc.fcbStates[wi][idx]
++	quelle := &sc.fcbStates[ri][fcbStateIdx]
++	zNum := ziel.num[:fcbSubfrlen]
++	zDen := ziel.den[:fcbSubfrlen]
++	qNum := quelle.num[:fcbSubfrlen]
++
+ 	add := dAbs[fcbPosNew]
+-	for i := 0; i < fcbSubfrlen; i++ {
+-		sc.fcbStates[wi][idx].num[i] = sc.fcbStates[ri][fcbStateIdx].num[i] + add
+-	}
+-	for i := 0; i < fcbSubfrlen; i++ {
+-		sc.fcbStates[wi][idx].den[i] = sc.fcbStates[ri][fcbStateIdx].den[i]
++	for i := range zNum {
++		zNum[i] = qNum[i] + add
+ 	}
++	copy(zDen, quelle.den[:fcbSubfrlen])
+ 
+ 	if pitchSharp == 0.0 {
+ 		nz0, nz1 := celpNonZeroRange(fcbPosNew, percRespLen, fcbSubfrlen)
+ 		colOff := celpPhiColOffset(fcbPosNew)
+ 		var dDen float32
+ 		for i := 0; i < int(fcbNPulses); i++ {
+-			pos := sc.fcbStates[ri][fcbStateIdx].pulsePositions[i]
+-			sgn := sc.fcbStates[ri][fcbStateIdx].pulseSigns[i]
++			pos := quelle.pulsePositions[i]
++			sgn := quelle.pulseSigns[i]
+ 			dDen += e.phiFlip[int(colOff+pos)] * sgn
+ 		}
+ 		dDen *= 2.0 * fcbSignNew
+ 		dDen += e.phiFlip[int(colOff+fcbPosNew)]
+ 		for i := 0; i < fcbSubfrlen; i++ {
+-			sc.fcbStates[wi][idx].den[i] += dDen
++			zDen[i] += dDen
+ 		}
+ 		for i := nz0; i < nz1; i++ {
+-			sc.fcbStates[wi][idx].den[i] += 2.0 * fcbSignNew * dSign[i] * e.phiFlip[int(colOff)+i]
++			zDen[i] += 2.0 * fcbSignNew * dSign[i] * e.phiFlip[int(colOff)+i]
+ 		}
+ 	} else {
+ 		var g1 float32
+@@ -798,8 +836,8 @@
+ 			colOff := celpPhiColOffset(pos)
+ 			for i := 0; i < int(fcbNPulses); i++ {
+ 				g2 := g1
+-				pulsePos := sc.fcbStates[ri][fcbStateIdx].pulsePositions[i]
+-				pulseSgn := sc.fcbStates[ri][fcbStateIdx].pulseSigns[i]
++				pulsePos := quelle.pulsePositions[i]
++				pulseSgn := quelle.pulseSigns[i]
+ 				for posq := pulsePos; posq < int32(fcbSubfrlen); posq += lag {
+ 					dDen += g2 * e.phiFlip[int(colOff+posq)] * pulseSgn
+ 					g2 *= pitchSharp
+@@ -819,7 +857,7 @@
+ 			g1 *= pitchSharp
+ 		}
+ 		for i := 0; i < fcbSubfrlen; i++ {
+-			sc.fcbStates[wi][idx].den[i] += dDen
++			zDen[i] += dDen
+ 		}
+ 		ddDen := make([]float32, smplMaxSfLen)
+ 		g1 = 1.0
+@@ -844,20 +882,20 @@
+ 			g1 *= pitchSharp
+ 		}
+ 		for i := 0; i < fcbSubfrlen; i++ {
+-			sc.fcbStates[wi][idx].den[i] += 2.0 * fcbSignNew * dSign[i] * ddDen[i]
++			zDen[i] += 2.0 * fcbSignNew * dSign[i] * ddDen[i]
+ 		}
+ 	}
+ 
+ 	for i := 0; i < int(fcbNPulses); i++ {
+-		sc.fcbStates[wi][idx].pulsePositions[i] = sc.fcbStates[ri][fcbStateIdx].pulsePositions[i]
+-		sc.fcbStates[wi][idx].pulseSigns[i] = sc.fcbStates[ri][fcbStateIdx].pulseSigns[i]
++		ziel.pulsePositions[i] = quelle.pulsePositions[i]
++		ziel.pulseSigns[i] = quelle.pulseSigns[i]
+ 	}
+-	sc.fcbStates[wi][idx].pulsePositions[fcbNPulses] = fcbPosNew
+-	sc.fcbStates[wi][idx].pulseSigns[fcbNPulses] = fcbSignNew
++	ziel.pulsePositions[fcbNPulses] = fcbPosNew
++	ziel.pulseSigns[fcbNPulses] = fcbSignNew
+ 
+ 	newNPulses := fcbNPulses + 1
+ 	q := make([]float32, smplMaxSfLen)
+-	celpQ(sc.fcbStates[wi][idx].num, sc.fcbStates[wi][idx].den, fcbSubfrlen, q)
++	celpQ(ziel.num, ziel.den, fcbSubfrlen, q)
+ 	var sortIx [celpMaxNumsurv]int32
+ 	celpGetMaxiK(q, sortIx[:], fcbSubfrlen, numsurv)
+ 	for i := 0; i < numsurv; i++ {
+diff -ruN meowcaller-rein/mlow/fft.go meowcaller-fix/mlow/fft.go
+--- a/mlow/fft.go	2026-09-24 21:21:49.159012211 +0200
++++ b/mlow/fft.go	2026-09-24 21:16:48.676139514 +0200
+@@ -1,6 +1,9 @@
+ package mlow
+ 
+-import "math"
++import (
++	"math"
++	"sync"
++)
+ 
+ // cpx is a single-precision complex value.
+ //
+@@ -36,9 +39,66 @@
+ 	return n
+ }
+ 
++// drehtabelle liefert die n Einheitswurzeln e^(sign*2*pi*i*m/n), m in [0,n).
++//
++// Vorher rechnete jeder einzelne Schmetterling seinen Drehfaktor mit
++// math.Cos und math.Sin aus. Im Profil des Kodierers gingen dafuer 50 %
++// der gesamten Rechenzeit drauf (math.cos 40 %, math.sin 10 %) -- auf
++// einem ARM ohne Hardware fuer Winkelfunktionen noch deutlich mehr. Die
++// Winkel sind aber immer sign*2*pi*(k*j mod n)/n: es gibt nur n
++// verschiedene, und sie aendern sich nie. Einmal je Laenge gerechnet,
++// danach nachgeschlagen.
++var drehtabellen sync.Map // int64 -> []cpx
++
++func drehtabelle(n int, sign float32) []cpx {
++	schluessel := int64(n)
++	if sign > 0 {
++		schluessel = -schluessel
++	}
++	if t, ok := drehtabellen.Load(schluessel); ok {
++		return t.([]cpx)
++	}
++	t := make([]cpx, n)
++	for m := 0; m < n; m++ {
++		w := float64(sign) * 2.0 * math.Pi * float64(m) / float64(n)
++		t[m] = cpx{re: float32(math.Cos(w)), im: float32(math.Sin(w))}
++	}
++	drehtabellen.Store(schluessel, t)
++	return t
++}
++
+ // fftRec is the recursive mixed-radix Cooley-Tukey DFT. sign is -1 forward, +1
+ // inverse (unnormalized). x holds n inputs at the given stride; out is contiguous.
++// Kratzspeicher fuer die Rekursion, nach Laenge sortiert.
++//
++// Vorher legte jeder Knoten der Rekursion sein eigenes Feld an: bei einer
++// Laenge von 512 sind das mehrere hundert Felder je FFT, und im Kodierer
++// laufen mehrere FFTs je Rahmen. Auf einem Geraet mit langsamem Speicher
++// und einem Sammler, der sich das alles ansehen muss, kostet das mehr als
++// das Rechnen selbst. Gebraucht werden hoechstens 2n Werte: n fuer diese
++// Ebene, und weil die Kinder nacheinander drankommen, reicht ihnen der
++// Rest zusammen.
++var kratzfelder sync.Pool
++
++func kratz(n int) []cpx {
++	if v := kratzfelder.Get(); v != nil {
++		f := v.([]cpx)
++		if len(f) >= n {
++			return f
++		}
++	}
++	return make([]cpx, n)
++}
++
++func kratzZurueck(f []cpx) { kratzfelder.Put(f) }
++
+ func fftRec(x []cpx, stride, n int, sign float32, out []cpx) {
++	k := kratz(2 * n)
++	fftRecKratz(x, stride, n, sign, out, k)
++	kratzZurueck(k)
++}
++
++func fftRecKratz(x []cpx, stride, n int, sign float32, out, kr []cpx) {
+ 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/674e85164b35ca19115dfebcf605708d15951ee7/wacore/src/voip/mlow/smpl_perc.rs#L362-L405
+ 	if n == 1 {
+ 		out[0] = x[0]
+@@ -46,30 +106,65 @@
+ 	}
+ 	p := smallestFactor(n)
+ 	if p == n {
++		dreh := drehtabelle(n, sign)
+ 		for k := 0; k < n; k++ {
+ 			var acc cpx
+-			angK := sign * 2.0 * smplPI * float32(k) / float32(n)
+ 			for j := 0; j < n; j++ {
+-				ang := angK * float32(j)
+-				w := cpx{re: float32(math.Cos(float64(ang))), im: float32(math.Sin(float64(ang)))}
+-				acc = acc.add(x[j*stride].mul(w))
++				acc = acc.add(x[j*stride].mul(dreh[(k*j)%n]))
+ 			}
+ 			out[k] = acc
+ 		}
+ 		return
+ 	}
+ 	m := n / p
+-	sub := make([]cpx, n)
++	sub := kr[:n]
++	kind := kr[n:]
+ 	for q := 0; q < p; q++ {
+-		fftRec(x[q*stride:], stride*p, m, sign, sub[q*m:(q+1)*m])
++		fftRecKratz(x[q*stride:], stride*p, m, sign, sub[q*m:(q+1)*m], kind)
+ 	}
++	dreh := drehtabelle(n, sign)
++
++	// Eigene Wege fuer Basis 2 und 3.
++	//
++	// Der allgemeine Weg darunter rechnet je Ausgabewert eine Schleife
++	// ueber alle Teilspektren, mit einer Modulo-Rechnung fuer den
++	// Drehfaktor und einer komplexen Multiplikation auch dann, wenn der
++	// Faktor 1 ist (q=0). Bei 512 und 576 kommen aber nur die Basen 2 und
++	// 3 vor -- zusammen sind das alle Stufen. Ausgeschrieben faellt die
++	// Modulo-Rechnung weg, der erste Summand wird ohne Multiplikation
++	// uebernommen, und der Drehfaktor laeuft in Schritten statt ueber
++	// eine Indexrechnung.
++	switch p {
++	case 2:
++		for k := 0; k < m; k++ {
++			a := sub[k]
++			b := sub[m+k].mul(dreh[k])
++			out[k] = a.add(b)
++			// e^(i*pi) = -1: die zweite Haelfte ist dieselbe Rechnung
++			// mit umgedrehtem Vorzeichen, ohne zweite Multiplikation.
++			out[k+m] = cpx{re: a.re - b.re, im: a.im - b.im}
++		}
++		return
++	case 3:
++		// Die beiden dritten Einheitswurzeln, einmal geholt.
++		w1 := dreh[n/3]
++		w2 := dreh[2*n/3]
++		for k := 0; k < m; k++ {
++			a := sub[k]
++			b := sub[m+k].mul(dreh[k])
++			c := sub[2*m+k].mul(dreh[2*k])
++			out[k] = a.add(b).add(c)
++			out[k+m] = a.add(b.mul(w1)).add(c.mul(w2))
++			out[k+2*m] = a.add(b.mul(w2)).add(c.mul(w1))
++		}
++		return
++	}
++
+ 	for k := 0; k < n; k++ {
+ 		kmod := k % m
+ 		var acc cpx
+ 		for q := 0; q < p; q++ {
+-			ang := sign * 2.0 * smplPI * float32(k) * float32(q) / float32(n)
+-			tw := cpx{re: float32(math.Cos(float64(ang))), im: float32(math.Sin(float64(ang)))}
+-			acc = acc.add(sub[q*m+kmod].mul(tw))
++			acc = acc.add(sub[q*m+kmod].mul(dreh[(k*q)%n]))
+ 		}
+ 		out[k] = acc
+ 	}
+@@ -85,14 +180,73 @@
+ // rfftForwardOrdered is the forward real FFT of n real samples, re-packed into the
+ // ordered REAL layout: f[0]=DC.re, f[1]=Nyquist.re, then [re,im] pairs for bins
+ // 1..n/2-1. Output length is n.
++//
++// Gerechnet wird eine komplexe FFT der halben Laenge.
++//
++// Vorher ging der reelle Eingang als komplexe Folge mit lauter Nullen im
++// Imaginaerteil in eine FFT voller Laenge -- die Haelfte der Arbeit war
++// Multiplizieren mit Null, und die Haelfte des Ergebnisses war die
++// gespiegelte andere Haelfte. Der uebliche Griff: je zwei
++// aufeinanderfolgende Abtastwerte werden zu einer komplexen Zahl
++// (z[k] = x[2k] + i*x[2k+1]), davon eine FFT der Laenge n/2, und
++// anschliessend werden die beiden ineinandergeschobenen Spektren in
++// linearer Zeit wieder getrennt:
++//
++//	E[k] = (Z[k] + conj(Z[n/2-k])) / 2        Spektrum der geraden Werte
++//	O[k] = (Z[k] - conj(Z[n/2-k])) / 2i       Spektrum der ungeraden
++//	X[k] = E[k] + e^(-2*pi*i*k/n) * O[k]
++//
++// Das halbiert Rechenzeit und Speicher, und weil die FFT rekursiv nach
++// Primfaktoren zerlegt, faellt bei 512 -> 256 und 576 -> 288 nichts
++// Unbequemes an.
+ func rfftForwardOrdered(time, f []float32) {
+ 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/674e85164b35ca19115dfebcf605708d15951ee7/wacore/src/voip/mlow/smpl_perc.rs#L416-L432
+ 	n := len(time)
+-	cin := make([]cpx, n)
++	if n < 4 || n%2 != 0 {
++		rfftForwardOrderedVoll(time, f)
++		return
++	}
++	h := n / 2
++	z := kratz(h)[:h]
++	for k := 0; k < h; k++ {
++		z[k] = cpx{re: time[2*k], im: time[2*k+1]}
++	}
++	Z := kratz(h)[:h]
++	cfft(z, Z, -1.0)
++	dreh := drehtabelle(n, -1.0)
++
++	// Gleich- und Nyquistanteil sind beide reell und fallen aus k=0 heraus:
++	// E[0] = Re(Z[0]), O[0] = Im(Z[0]).
++	f[0] = Z[0].re + Z[0].im
++	f[1] = Z[0].re - Z[0].im
++	for k := 1; k < h; k++ {
++		zk := Z[k]
++		zc := Z[h-k]
++		// E = (zk + conj(zc)) / 2
++		eRe := 0.5 * (zk.re + zc.re)
++		eIm := 0.5 * (zk.im - zc.im)
++		// O = (zk - conj(zc)) / (2i) = -i * (zk - conj(zc)) / 2
++		dRe := 0.5 * (zk.re - zc.re)
++		dIm := 0.5 * (zk.im + zc.im)
++		oRe, oIm := dIm, -dRe
++		w := dreh[k]
++		f[2*k] = eRe + (w.re*oRe - w.im*oIm)
++		f[2*k+1] = eIm + (w.re*oIm + w.im*oRe)
++	}
++	kratzZurueck(z)
++	kratzZurueck(Z)
++}
++
++// rfftForwardOrderedVoll ist der alte Weg ueber eine komplexe FFT voller
++// Laenge. Er bleibt als Rueckfall fuer ungerade oder winzige Laengen --
++// und als Vergleichsmass fuer den Test.
++func rfftForwardOrderedVoll(time, f []float32) {
++	n := len(time)
++	cin := kratz(n)[:n]
+ 	for i := 0; i < n; i++ {
+-		cin[i].re = time[i]
++		cin[i] = cpx{re: time[i]}
+ 	}
+-	spec := make([]cpx, n)
++	spec := kratz(n)[:n]
+ 	cfft(cin, spec, -1.0)
+ 	f[0] = spec[0].re
+ 	f[1] = spec[n/2].re
+@@ -100,4 +254,6 @@
+ 		f[2*i] = spec[i].re
+ 		f[2*i+1] = spec[i].im
+ 	}
++	kratzZurueck(cin)
++	kratzZurueck(spec)
+ }
+diff -ruN meowcaller-rein/mlow/fft_dft_test.go meowcaller-fix/mlow/fft_dft_test.go
+--- a/mlow/fft_dft_test.go	1970-01-01 01:00:00.000000000 +0100
++++ b/mlow/fft_dft_test.go	2026-09-24 21:17:19.813373927 +0200
+@@ -0,0 +1,59 @@
++package mlow
++
++import (
++	"math"
++	"math/rand"
++	"testing"
++)
++
++// Unabhaengiger Massstab: die schlichte Doppelsumme. Sie ist zu langsam fuer
++// den Betrieb, aber genau deshalb taugt sie als Vergleich -- die schnellen
++// Wege (ausgeschriebene Basis 2 und 3, Drehtabelle, Kratzspeicher) muessen
++// dasselbe liefern.
++func naiveDft(x []cpx, sign float32) []cpx {
++	n := len(x)
++	out := make([]cpx, n)
++	for k := 0; k < n; k++ {
++		var re, im float64
++		for j := 0; j < n; j++ {
++			w := float64(sign) * 2 * math.Pi * float64(k) * float64(j) / float64(n)
++			c, s := math.Cos(w), math.Sin(w)
++			re += float64(x[j].re)*c - float64(x[j].im)*s
++			im += float64(x[j].re)*s + float64(x[j].im)*c
++		}
++		out[k] = cpx{re: float32(re), im: float32(im)}
++	}
++	return out
++}
++
++func TestCfftGegenDoppelsumme(t *testing.T) {
++	r := rand.New(rand.NewSource(11))
++	// 256 und 288 sind die Laengen, die der Kodierer nach der Halbierung
++	// wirklich rechnet; 512 und 576 waren es vorher. 6 und 12 nehmen die
++	// Basis 3 mit, 7 den allgemeinen Weg fuer Primzahlen.
++	for _, n := range []int{2, 3, 4, 6, 7, 8, 12, 256, 288} {
++		x := make([]cpx, n)
++		for i := range x {
++			x[i] = cpx{re: float32(r.NormFloat64()), im: float32(r.NormFloat64())}
++		}
++		for _, sign := range []float32{-1, 1} {
++			schnell := make([]cpx, n)
++			cfft(x, schnell, sign)
++			soll := naiveDft(x, sign)
++			var groesste float64
++			for _, v := range soll {
++				if a := math.Hypot(float64(v.re), float64(v.im)); a > groesste {
++					groesste = a
++				}
++			}
++			grenze := groesste * 1e-4
++			for i := range soll {
++				d := math.Hypot(float64(schnell[i].re-soll[i].re), float64(schnell[i].im-soll[i].im))
++				if d > grenze {
++					t.Fatalf("n=%d sign=%v Stelle %d: Abweichung %v, erlaubt %v",
++						n, sign, i, d, grenze)
++				}
++			}
++		}
++	}
++}
+diff -ruN meowcaller-rein/mlow/fft_real_test.go meowcaller-fix/mlow/fft_real_test.go
+--- a/mlow/fft_real_test.go	1970-01-01 01:00:00.000000000 +0100
++++ b/mlow/fft_real_test.go	2026-09-24 21:14:58.820524304 +0200
+@@ -0,0 +1,67 @@
++package mlow
++
++import (
++	"math"
++	"math/rand"
++	"testing"
++)
++
++// Die halblange reelle FFT muss dasselbe liefern wie die komplexe FFT
++// voller Laenge -- das ist der einzige Beleg dafuer, dass die Entflechtung
++// stimmt. Geprueft werden die Laengen, die der Kodierer wirklich benutzt.
++func TestRfftGleichWieVolleFft(t *testing.T) {
++	r := rand.New(rand.NewSource(7))
++	for _, n := range []int{4, 8, 16, 64, 256, 288, 512, 576} {
++		zeit := make([]float32, n)
++		for i := range zeit {
++			zeit[i] = float32(r.NormFloat64())
++		}
++		schnell := make([]float32, n)
++		voll := make([]float32, n)
++		rfftForwardOrdered(zeit, schnell)
++		rfftForwardOrderedVoll(zeit, voll)
++
++		var groesste float64
++		for _, v := range voll {
++			if a := math.Abs(float64(v)); a > groesste {
++				groesste = a
++			}
++		}
++		grenze := groesste * 1e-4
++		for i := range voll {
++			if d := math.Abs(float64(schnell[i] - voll[i])); d > grenze {
++				t.Fatalf("n=%d, Stelle %d: %v statt %v (Abweichung %v, erlaubt %v)",
++					n, i, schnell[i], voll[i], d, grenze)
++			}
++		}
++	}
++}
++
++// Ein reiner Ton muss genau in seinem Fach landen und sonst nirgends.
++func TestRfftTonImRichtigenFach(t *testing.T) {
++	const n, fach = 512, 7
++	zeit := make([]float32, n)
++	for i := range zeit {
++		zeit[i] = float32(math.Cos(2 * math.Pi * fach * float64(i) / n))
++	}
++	f := make([]float32, n)
++	rfftForwardOrdered(zeit, f)
++	betrag := func(k int) float64 {
++		if k == 0 {
++			return math.Abs(float64(f[0]))
++		}
++		re, im := float64(f[2*k]), float64(f[2*k+1])
++		return math.Hypot(re, im)
++	}
++	if b := betrag(fach); b < 0.4*n {
++		t.Fatalf("Fach %d hat nur %v", fach, b)
++	}
++	for k := 1; k < n/2; k++ {
++		if k == fach {
++			continue
++		}
++		if b := betrag(k); b > 0.01*n {
++			t.Fatalf("Fach %d sollte leer sein, hat aber %v", k, b)
++		}
++	}
++}
