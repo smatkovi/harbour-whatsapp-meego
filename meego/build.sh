@@ -33,7 +33,14 @@ OUT=$SRC/build/meego
 mkdir -p "$OUT"
 
 # --- Backend ---------------------------------------------------------------
+# Die gepatchte Fassung von meowcaller: ohne sie braucht der MLow-Kodierer
+# auf der N950 273 ms je 60-ms-Rahmen statt 90. Die replace-Zeile kommt in
+# die KOPIE des Baums, nicht ins Repo -- der Pfad gilt nur hier.
+FORK=$(sh "$SRC/meego/meowcaller-fork.sh" | tail -1)
 cd "$SRC/backend"
+grep -q '^replace github.com/purpshell/meowcaller' go.mod ||
+    printf '\nreplace github.com/purpshell/meowcaller => %s\n' "$FORK" >> go.mod
+GOFLAGS=-mod=mod GOTOOLCHAIN=local go mod tidy > /dev/null
 GOOS=linux GOARCH=arm GOARM=7 CGO_ENABLED=0 go build -tags meego \
     -ldflags "-s -w" -o "$OUT/wa-backend" .
 echo "== wa-backend fertig ($(stat -c %s "$OUT/wa-backend") B)"
