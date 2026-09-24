@@ -211,6 +211,20 @@ verbindet sich nie wieder.
 | A43 | Body > 200 Zeichen | gekürzt mit Auslassungszeichen |
 | A44 | alle 23 Kataloge | `%1` überall ersetzt, Code bzw. Status im Text |
 
+## A — SIP-Brücke, Tonquelle (`backend/sipbridge_test.go`, Kennung `meego`)
+
+Diese Fälle laufen nur mit `go test -tags meego` — `tests/run.sh` fährt
+beide Kennungen. Ohne die zweite Runde blieben die Plattformdateien des
+N9/N950 ungetestet, und genau dort saß der Fehler, der die Gegenseite taub
+machte.
+
+| ID | Fall | Erwartet |
+|----|------|----------|
+| A72 | zehn Rahmen aus `sipQuelle` holen | unter 100 ms — die Quelle darf sich **nicht** selbst takten: meowcallers Sendeschleife ist bereits getaktet, ein Schlaf hier hält sie an und der Strom läuft langsamer als die Zeit |
+| A73 | halber Rahmen im Puffer | vorne die Samples, hinten Stille, immer volle Rahmenlänge |
+| A74 | zehn Rahmen in den Puffer schreiben | es bleiben drei stehen, verworfen wird das **Älteste** |
+| A75 | µ-law hin und zurück | Abstand unter 1/8 des Werts, kein Vorzeichenfehler |
+
 ---
 
 ## G — Gerätefälle
@@ -241,6 +255,9 @@ Ergebnis erkennt, ohne raten zu müssen.
 | G19 | Portdatei fremder Instanz | App-Backend beenden, während Daemon läuft | Daemon-Eintrag bleibt stehen | Datei enthält weiter den Daemon-Port |
 | G20 | Sprachen | App-Sprache umstellen, Fehler provozieren | Meldung in der gewählten Sprache, kein `%1` | Text lesbar |
 | G21 | Antwort aus der Benachrichtigung | einmal mit laufendem Daemon, einmal nur mit offener App | in beiden Fällen wird gesendet | Nachricht erscheint im Chat |
+| G22 | Eingehender Anruf: die Gegenseite hört mich | Anruf annehmen, sprechen | Gegenseite hört durchgehend | `📞 SIP: Telefonmikrofon … Spitze` im Protokoll, Spitze deutlich über 0 — steht dort nichts, schickt das Telefon gar kein RTP, und die Ursache liegt vor der Brücke |
+| G23 | Ausgehender Anruf, App **zu** | `curl "http://127.0.0.1:8085/call/start?jid=<Nummer>"` über ssh | Verbindung kommt zustande | `relay DataChannel open`, kein `relay connect timed out` |
+| G24 | Ausgehender Anruf, App **offen** | dasselbe aus der App | wie G23 | scheitert nur hier, liegt es an der Last: App und Backend teilen sich einen Kern |
 
 ---
 

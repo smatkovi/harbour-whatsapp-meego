@@ -47,7 +47,9 @@ const (
 	sipRate      = 8000  // G.711 ist immer 8 kHz
 	waRate       = 16000 // meowcaller.SampleRate
 	rtpFrame     = 160   // 20 ms bei 8 kHz
-	nutzlastPCMU = 0
+	// Ein meowcaller-Rahmen: 60 ms bei 16 kHz (meowcaller.FrameSamples).
+	rahmenSamples = 960
+	nutzlastPCMU  = 0
 )
 
 // ---------------------------------------------------------------- G.711 µ-law
@@ -99,14 +101,28 @@ func muLawDekodieren(b byte) int16 { return muLawTabelle[b] }
 // ---------------------------------------------------------------- Ringpuffer
 
 // tonPuffer haelt Samples zwischen den beiden Seiten, die verschieden schnell
-// takten: RTP kommt alle 20 ms, meowcaller will 60-ms-Rahmen.
+// takten: RTP kommt alle 20 ms in 160-Sample-Haeppchen, meowcaller holt alle
+// 60 ms einen Rahmen von 960. Im Mittel passt das genau; im Einzelnen liegen
+// die beiden Takte aber beliebig zueinander, und auf einem ausgelasteten
+// Geraet verschiebt sich das staendig.
+//
+// Deshalb ist der Puffer ein kleiner Verzoegerungsspeicher und kein blosses
+// Rohr: er gibt nur *volle* Rahmen heraus. Frueher lieferte er, was gerade
+// da war, und fuellte den Rest mit Stille -- das zerschnitt jedes zweite
+// Wort mitten im Klang, und beim Angerufenen kamen nur noch Wortfetzen an.
+// Ein angefangener Rahmen bleibt jetzt liegen, bis er voll ist.
 type tonPuffer struct {
 	mu  sync.Mutex
 	dat []float32
 	max int
+	// Wie viel sich ansammeln muss, bevor die Ausgabe (wieder) anlaeuft.
+	vorlauf int
+	bereit  bool
 }
 
-func neuerTonPuffer(max int) *tonPuffer { return &tonPuffer{max: max} }
+func neuerTonPuffer(max, vorlauf int) *tonPuffer {
+	return &tonPuffer{max: max, vorlauf: vorlauf}
+}
 
 func (p *tonPuffer) schreiben(s []float32) {
 	p.mu.Lock()
@@ -119,15 +135,40 @@ func (p *tonPuffer) schreiben(s []float32) {
 	p.mu.Unlock()
 }
 
-// lesen fuellt ziel; fehlende Samples werden zu Stille.
-func (p *tonPuffer) lesen(ziel []float32) {
+// zuruecksetzen leert den Speicher fuer ein neues Gespraech -- sonst ginge
+// der Rest des vorigen als Vorlauf in das naechste ein.
+func (p *tonPuffer) zuruecksetzen() {
 	p.mu.Lock()
-	n := copy(ziel, p.dat)
-	p.dat = p.dat[n:]
+	p.dat = p.dat[:0]
+	p.bereit = false
 	p.mu.Unlock()
-	for i := n; i < len(ziel); i++ {
+}
+
+// lesen fuellt ziel mit einem vollen Rahmen und sagt, ob das gelang. Reicht
+// der Vorrat nicht, kommt Stille -- und der angefangene Rahmen bleibt
+// liegen, statt zerschnitten zu werden.
+func (p *tonPuffer) lesen(ziel []float32) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i := range ziel {
 		ziel[i] = 0
 	}
+	if !p.bereit {
+		// Nach einer Luecke erst wieder etwas ansammeln lassen, sonst
+		// haengt die Ausgabe von da an am Rand des Leerlaufs und jeder
+		// zweite Rahmen faellt aus.
+		if len(p.dat) < p.vorlauf {
+			return false
+		}
+		p.bereit = true
+	}
+	if len(p.dat) < len(ziel) {
+		p.bereit = false
+		return false
+	}
+	copy(ziel, p.dat[:len(ziel)])
+	p.dat = p.dat[len(ziel):]
+	return true
 }
 
 // ---------------------------------------------------------------- Umrechnung
@@ -183,7 +224,18 @@ type sipBruecke struct {
 	ssrc      uint32
 
 	vonTelefon *tonPuffer // Mikrofon des Telefons, 16 kHz
-	zumTelefon *tonPuffer // Ton von WhatsApp, 16 kHz
+
+	// Nur zur Fehlersuche: was vom Telefon hereinkam, seit das Gespraech
+	// steht. Ohne diese Zahlen liess sich "die Gegenseite hoert mich
+	// nicht" nicht auseinanderhalten -- schickt das Telefon nichts, oder
+	// schicken wir das Empfangene nicht weiter?
+	pakete   uint64
+	spitze   float32
+	gemeldet time.Time
+	// Wie oft der Puffer einen Rahmen schuldig blieb. Wortfetzen beim
+	// Angerufenen liest man hier ab, nicht am Paketzaehler.
+	luecken        uint64
+	lueckeGemeldet time.Time
 
 	// Wird gerufen, wenn das Telefon auflegt (BYE) oder ablehnt.
 	beiAuflegen func()
@@ -199,8 +251,12 @@ var bruecke *sipBruecke
 // Sperrbildschirm.
 func sipBrueckeStarten() {
 	b := &sipBruecke{
-		vonTelefon: neuerTonPuffer(waRate), // eine Sekunde
-		zumTelefon: neuerTonPuffer(waRate),
+		// Hoechstens sechs Rahmen (360 ms) im Speicher, angelaufen wird
+		// mit zweien (120 ms). Frueher stand hier eine ganze Sekunde, und
+		// weil genau so schnell gelesen wird, wie geschrieben wird, blieb
+		// jeder einmal entstandene Rueckstand fuer immer als Verzoegerung
+		// stehen -- aufholen kann die Leseseite ja nicht.
+		vonTelefon: neuerTonPuffer(rahmenSamples*6, rahmenSamples*2),
 		ssrc:       uint32(time.Now().UnixNano()),
 	}
 	ua, err := sipgo.NewUA(sipgo.WithUserAgent("harbour-whatsapp"))
@@ -298,6 +354,10 @@ func (b *sipBruecke) klingeln(name, nummer string, beiAnnahme, beiAuflegen func(
 	kontakt := b.kontakt
 	b.beiAuflegen = beiAuflegen
 	b.beiAnnahme = beiAnnahme
+	// Die Zaehler gehoeren zum Gespraech, nicht zur Laufzeit.
+	b.pakete, b.spitze, b.gemeldet = 0, 0, time.Time{}
+	b.luecken, b.lueckeGemeldet = 0, time.Time{}
+	b.vonTelefon.zuruecksetzen()
 	b.mu.Unlock()
 	if kontakt == nil {
 		return fmt.Errorf("kein Telefon registriert")
@@ -329,6 +389,11 @@ func (b *sipBruecke) klingeln(name, nummer string, beiAnnahme, beiAuflegen func(
 		err := sitzung.WaitAnswer(warteCtx, sipgo.AnswerOptions{
 			OnResponse: func(res *sip.Response) error {
 				if res.StatusCode == 200 {
+					// Die Antwort des Telefons einmal ins Protokoll: an
+					// ihr haengt, wohin wir senden -- und ob das Telefon
+					// ueberhaupt senden will (sendrecv/recvonly).
+					fmt.Printf("📞 SIP: Antwort des Telefons: %s\n",
+						strings.Join(strings.Fields(string(res.Body())), " "))
 					b.gegenstelleAusSDP(string(res.Body()))
 				}
 				return nil
@@ -466,10 +531,68 @@ func (b *sipBruecke) rtpLesen() {
 			continue
 		}
 		roh := make([]float32, len(p.Payload))
+		var spitze float32
 		for i, c := range p.Payload {
-			roh[i] = float32(muLawDekodieren(c)) / 32768
+			w := float32(muLawDekodieren(c)) / 32768
+			roh[i] = w
+			if w < 0 {
+				w = -w
+			}
+			if w > spitze {
+				spitze = w
+			}
 		}
 		b.vonTelefon.schreiben(hoch(roh))
+		b.zaehlen(von, p.PayloadType, len(p.Payload), spitze)
+	}
+}
+
+// zaehlen meldet einmal je Sekunde, was vom Telefon hereinkommt. Das erste
+// Paket bekommt eine eigene Zeile, samt Nutzlastart und Absender: kommt
+// gar nichts, steht im Protokoll nichts -- und genau das ist die Antwort
+// auf "die Gegenseite hoert mich nicht".
+func (b *sipBruecke) zaehlen(von *net.UDPAddr, art uint8, laenge int, spitze float32) {
+	b.mu.Lock()
+	b.pakete++
+	if spitze > b.spitze {
+		b.spitze = spitze
+	}
+	erstes := b.pakete == 1
+	jetzt := time.Now()
+	faellig := jetzt.Sub(b.gemeldet) >= time.Second
+	anzahl, hoechste := b.pakete, b.spitze
+	if erstes || faellig {
+		b.gemeldet = jetzt
+		b.spitze = 0
+	}
+	b.mu.Unlock()
+	if erstes {
+		fmt.Printf("%s 📞 SIP: erstes RTP vom Telefon: %s, Nutzlast %d, %d Bytes\n",
+			jetzt.Format("15:04:05.000"), von, art, laenge)
+		return
+	}
+	if faellig {
+		fmt.Printf("%s 📞 SIP: Telefonmikrofon %d Pakete, Spitze %.3f\n",
+			jetzt.Format("15:04:05.000"), anzahl, hoechste)
+	}
+}
+
+// luecke meldet, wenn der Puffer einen Rahmen schuldig bleiben musste.
+// Hoechstens eine Zeile je Sekunde: wichtig ist, ob es Luecken gibt und wie
+// viele, nicht jede einzelne.
+func (b *sipBruecke) luecke() {
+	b.mu.Lock()
+	b.luecken++
+	anzahl := b.luecken
+	jetzt := time.Now()
+	faellig := jetzt.Sub(b.lueckeGemeldet) >= time.Second
+	if faellig {
+		b.lueckeGemeldet = jetzt
+	}
+	b.mu.Unlock()
+	if faellig {
+		fmt.Printf("%s 📞 SIP: %d Luecken im Ton zum Gespraech\n",
+			jetzt.Format("15:04:05.000"), anzahl)
 	}
 }
 
@@ -477,12 +600,28 @@ func (b *sipBruecke) rtpLesen() {
 
 type sipQuelle struct{ b *sipBruecke }
 
-// ReadFrame liefert, was das Telefonmikrofon aufgenommen hat.
+// ReadFrame liefert, was das Telefonmikrofon aufgenommen hat -- sofort,
+// ohne eigene Taktung.
+//
+// Hier stand einmal ein Schlaf von 60 ms, "damit die Schleife nicht so
+// schnell laeuft, wie die CPU mag". Die Schleife gehoert aber gar nicht
+// uns: meowcaller holt sich den Rahmen aus seiner *getakteten*
+// Sendeschleife, einen alle 60 ms, und schickt ihn gleich im selben
+// Durchgang weg. Der Schlaf hielt damit genau diese Schleife an. Ein
+// Durchgang dauerte danach 60 ms Schlaf + Kodieren + Verschluesseln +
+// Senden, also laenger als die 60 ms, die er dauern darf. Der Strom lief
+// damit langsamer als die Zeit: die Zeitmarken der Pakete blieben
+// zurueck, der Puffer lief staendig ueber, und beim Angerufenen kam
+// nichts Brauchbares an -- "ich hoere dich nicht", waehrend die
+// Gegenrichtung einwandfrei lief.
+//
+// Die PulseAudio-Quelle macht es richtig vor (micSource.ReadFrame):
+// nehmen, was da ist, Stille auffuellen, sofort zurueckkommen.
 func (q sipQuelle) ReadFrame() ([]float32, error) {
-	rahmen := make([]float32, 960) // meowcaller.FrameSamples
-	q.b.vonTelefon.lesen(rahmen)
-	// 60 ms takten -- sonst laeuft die Schleife so schnell, wie die CPU mag.
-	time.Sleep(60 * time.Millisecond)
+	rahmen := make([]float32, rahmenSamples)
+	if !q.b.vonTelefon.lesen(rahmen) {
+		q.b.luecke()
+	}
 	return rahmen, nil
 }
 

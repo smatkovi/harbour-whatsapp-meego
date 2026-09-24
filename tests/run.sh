@@ -61,6 +61,12 @@ go_tests() {
         ( cd "$tmp" && go test ./... ) 2>&1 | tee -a "$log"
         # Ergebnis von go test, nicht von tee
         grep -q "^FAIL" "$log" && rc=1
+        # Und einmal mit der MeeGo-Kennung: die SIP-Bruecke und die
+        # Plattformdateien des N9/N950 haengen daran und blieben sonst
+        # ungetestet -- der Fehler, der die Gegenseite taub machte, sass
+        # genau dort.
+        ( cd "$tmp" && go test -tags meego ./... ) 2>&1 | tee -a "$log"
+        grep -q "^FAIL" "$log" && rc=1
     fi
     rm -rf "$tmp"
     return $rc
