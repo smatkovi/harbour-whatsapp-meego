@@ -33,4 +33,13 @@ for p in "$SRC"/backend/patches/*.patch; do
     ( cd "$ZIEL" && patch -p1 --quiet < "$p" )
     echo "== aufgespielt: $(basename "$p")"
 done
+
+# Die Tests der Bibliothek mitlaufen lassen. Der Patch fasst die FFT und
+# die Pulssuche an -- beides Stellen, an denen ein Fehler nicht abstuerzt,
+# sondern nur schlecht klingt. Im Patch liegen dafuer eigene Tests, die
+# gegen die schlichte Doppelsumme vergleichen.
+( cd "$ZIEL" && GOFLAGS=-mod=mod GOTOOLCHAIN=local go test ./mlow/ ) || {
+    echo "Die Tests der gepatchten Bibliothek sind durchgefallen." >&2
+    exit 1
+}
 echo "$ZIEL"
