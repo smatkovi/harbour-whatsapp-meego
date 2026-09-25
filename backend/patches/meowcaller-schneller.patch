@@ -1,6 +1,6 @@
-diff -ruN '--exclude=*.bak' meowcaller-rein/audio_playout.go meowcaller-fix/audio_playout.go
---- a/audio_playout.go	2026-09-24 21:21:49.157142707 +0200
-+++ b/audio_playout.go	2026-09-24 23:20:04.369439379 +0200
+diff -ruN '--exclude=*.log' meowcaller-rein/audio_playout.go meowcaller-fix/audio_playout.go
+--- a/audio_playout.go	2026-09-25 07:59:15.623323472 +0200
++++ b/audio_playout.go	2026-09-25 07:58:25.716768321 +0200
 @@ -1,7 +1,16 @@
  package meowcaller
  
@@ -19,9 +19,90 @@ diff -ruN '--exclude=*.bak' meowcaller-rein/audio_playout.go meowcaller-fix/audi
  	audioPlayoutMaxGapSamples  = 2 * SampleRate
  )
  
-diff -ruN '--exclude=*.bak' meowcaller-rein/mlow/analysis.go meowcaller-fix/mlow/analysis.go
---- a/mlow/analysis.go	2026-09-24 21:21:49.158710207 +0200
-+++ b/mlow/analysis.go	2026-09-24 23:09:54.496818285 +0200
+diff -ruN '--exclude=*.log' meowcaller-rein/engine_media.go meowcaller-fix/engine_media.go
+--- a/engine_media.go	2026-09-25 07:59:15.624516129 +0200
++++ b/engine_media.go	2026-09-25 07:58:51.448057522 +0200
+@@ -565,31 +565,76 @@
+ 		ticker := time.NewTicker(frameInterval)
+ 		defer ticker.Stop()
+ 		var txCount uint64
++		// Wo bleibt die Zeit? Einmal je Sekunde eine Zeile.
++		//
++		// Die Sendeschleife soll 16,7 Rahmen je Sekunde hinausschicken.
++		// Auf dem N950 waren es fuenf, bei einem Kern, der NICHT
++		// ausgelastet war -- also entweder rechnet etwas zu lange, oder
++		// die Schleife wartet. Geraten wurde genug; diese Zeile sagt es.
++		var (
++			messBeginn  = time.Now()
++			messRahmen  int
++			messHolen   time.Duration
++			messKodiere time.Duration
++			messSchutz  time.Duration
++			messSenden  time.Duration
++			messWarten  time.Duration
++		)
++		letzteRunde := time.Now()
+ 		for {
+ 			select {
+ 			case <-ctx.Done():
+ 				return
+ 			case <-ticker.C:
+ 			}
++			rundenBeginn := time.Now()
++			messWarten += rundenBeginn.Sub(letzteRunde)
++
+ 			frame := silence
++			t0 := time.Now()
+ 			if player, _ := callPlayerSink(call); player != nil {
+ 				if f := player.nextFrame(); f != nil {
+ 					frame = f
+ 				}
+ 			}
++			messHolen += time.Since(t0)
++
++			t0 = time.Now()
+ 			payload, err := enc.Encode(frame)
++			messKodiere += time.Since(t0)
+ 			if err != nil {
+ 				continue
+ 			}
++			t0 = time.Now()
+ 			packet, err := txPipe.ProtectAudio(payload)
++			messSchutz += time.Since(t0)
+ 			if err != nil {
+ 				continue
+ 			}
++			messRahmen++
++			if seit := time.Since(messBeginn); seit >= time.Second {
++				log.Info().
++					Int("rahmen", messRahmen).
++					Dur("holen", messHolen).
++					Dur("kodieren", messKodiere).
++					Dur("schutz", messSchutz).
++					Dur("senden", messSenden).
++					Dur("warten", messWarten).
++					Dur("spanne", seit).
++					Msg("Sendeschleife")
++				messBeginn = time.Now()
++				messRahmen = 0
++				messHolen, messKodiere, messSchutz, messSenden, messWarten = 0, 0, 0, 0, 0
++			}
+ 			e.c.diag.Emit("media_out", map[string]any{
+ 				"frame": txCount, "frame_samples": len(frame), "pcm_rms": rmsFloat32(frame),
+ 				"payload_len": len(payload), "packet_len": len(packet),
+ 			})
+-			if _, err := ch.Send(packet); err != nil {
++			tSend := time.Now()
++			_, sendErr := ch.Send(packet)
++			messSenden += time.Since(tSend)
++			letzteRunde = time.Now()
++			if sendErr != nil {
+ 				return
+ 			}
+ 			if txCount++; txCount == 1 {
+diff -ruN '--exclude=*.log' meowcaller-rein/mlow/analysis.go meowcaller-fix/mlow/analysis.go
+--- a/mlow/analysis.go	2026-09-25 07:59:15.624901491 +0200
++++ b/mlow/analysis.go	2026-09-25 07:58:25.716840430 +0200
 @@ -1,6 +1,10 @@
  package mlow
  
@@ -77,9 +158,9 @@ diff -ruN '--exclude=*.bak' meowcaller-rein/mlow/analysis.go meowcaller-fix/mlow
  // quantize runs the bit-exact LSF quantizer + the C cond-coding condition.
  func (fe *frontEndLsf) quantize(synthT *SmplSynthTables, voiced int, prevNlsf []float32) (int32, [16]int32, []float32, [17]float32) {
  	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/ed12f359a086b28e807ba236f0977af1000859fe/wacore/src/voip/mlow/analysis.rs#L1065-L1105
-diff -ruN '--exclude=*.bak' meowcaller-rein/mlow/celp_enc.go meowcaller-fix/mlow/celp_enc.go
---- a/mlow/celp_enc.go	2026-09-24 21:21:49.158789638 +0200
-+++ b/mlow/celp_enc.go	2026-09-24 23:09:54.496923394 +0200
+diff -ruN '--exclude=*.log' meowcaller-rein/mlow/celp_enc.go meowcaller-fix/mlow/celp_enc.go
+--- a/mlow/celp_enc.go	2026-09-25 07:59:15.624979442 +0200
++++ b/mlow/celp_enc.go	2026-09-25 07:58:25.716933679 +0200
 @@ -97,9 +97,14 @@
  
  func celpDotProd(a, b []float32, l int) float32 {
@@ -228,9 +309,9 @@ diff -ruN '--exclude=*.bak' meowcaller-rein/mlow/celp_enc.go meowcaller-fix/mlow
  	var sortIx [celpMaxNumsurv]int32
  	celpGetMaxiK(q, sortIx[:], fcbSubfrlen, numsurv)
  	for i := 0; i < numsurv; i++ {
-diff -ruN '--exclude=*.bak' meowcaller-rein/mlow/cng_test.go meowcaller-fix/mlow/cng_test.go
+diff -ruN '--exclude=*.log' meowcaller-rein/mlow/cng_test.go meowcaller-fix/mlow/cng_test.go
 --- a/mlow/cng_test.go	1970-01-01 01:00:00.000000000 +0100
-+++ b/mlow/cng_test.go	2026-09-24 23:09:54.497004569 +0200
++++ b/mlow/cng_test.go	2026-09-25 07:58:25.717016358 +0200
 @@ -0,0 +1,75 @@
 +package mlow
 +
@@ -307,9 +388,9 @@ diff -ruN '--exclude=*.bak' meowcaller-rein/mlow/cng_test.go meowcaller-fix/mlow
 +		t.Fatalf("Grundpegel sprang von %v auf %v", vorher, d.grundpegel)
 +	}
 +}
-diff -ruN '--exclude=*.bak' meowcaller-rein/mlow/decoder.go meowcaller-fix/mlow/decoder.go
---- a/mlow/decoder.go	2026-09-24 21:21:49.158876883 +0200
-+++ b/mlow/decoder.go	2026-09-24 23:09:54.497050817 +0200
+diff -ruN '--exclude=*.log' meowcaller-rein/mlow/decoder.go meowcaller-fix/mlow/decoder.go
+--- a/mlow/decoder.go	2026-09-25 07:59:15.625066119 +0200
++++ b/mlow/decoder.go	2026-09-25 07:58:25.717061094 +0200
 @@ -1,6 +1,12 @@
  package mlow
  
@@ -454,9 +535,9 @@ diff -ruN '--exclude=*.bak' meowcaller-rein/mlow/decoder.go meowcaller-fix/mlow/
  }
  
  func (d *MlowDecoder) decodeActiveFrame(frame []byte, outLen int) []float32 {
-diff -ruN '--exclude=*.bak' meowcaller-rein/mlow/dtx_test.go meowcaller-fix/mlow/dtx_test.go
+diff -ruN '--exclude=*.log' meowcaller-rein/mlow/dtx_test.go meowcaller-fix/mlow/dtx_test.go
 --- a/mlow/dtx_test.go	1970-01-01 01:00:00.000000000 +0100
-+++ b/mlow/dtx_test.go	2026-09-24 23:09:54.497093718 +0200
++++ b/mlow/dtx_test.go	2026-09-25 07:58:25.717103856 +0200
 @@ -0,0 +1,72 @@
 +package mlow
 +
@@ -530,9 +611,9 @@ diff -ruN '--exclude=*.bak' meowcaller-rein/mlow/dtx_test.go meowcaller-fix/mlow
 +		t.Fatalf("Sprache kam als %d Byte heraus", len(lang))
 +	}
 +}
-diff -ruN '--exclude=*.bak' meowcaller-rein/mlow/encoder.go meowcaller-fix/mlow/encoder.go
---- a/mlow/encoder.go	2026-09-24 21:21:49.158951736 +0200
-+++ b/mlow/encoder.go	2026-09-24 23:09:54.497141219 +0200
+diff -ruN '--exclude=*.log' meowcaller-rein/mlow/encoder.go meowcaller-fix/mlow/encoder.go
+--- a/mlow/encoder.go	2026-09-25 07:59:15.625141534 +0200
++++ b/mlow/encoder.go	2026-09-25 07:58:25.717150977 +0200
 @@ -301,7 +301,10 @@
  
  // SmplFrameParams is the analyzed parameter set for one 60 ms MLow frame.
@@ -558,9 +639,9 @@ diff -ruN '--exclude=*.bak' meowcaller-rein/mlow/encoder.go meowcaller-fix/mlow/
  	out = append(out, fp.TOC)
  	out = append(out, body[:n]...)
  	lg.Trace().Int("frame_bytes", len(out)).Int("body_bytes", n).Msg("encode frame: done")
-diff -ruN '--exclude=*.bak' meowcaller-rein/mlow/fft.go meowcaller-fix/mlow/fft.go
---- a/mlow/fft.go	2026-09-24 21:21:49.159012211 +0200
-+++ b/mlow/fft.go	2026-09-24 23:09:54.497204549 +0200
+diff -ruN '--exclude=*.log' meowcaller-rein/mlow/fft.go meowcaller-fix/mlow/fft.go
+--- a/mlow/fft.go	2026-09-25 07:59:15.625201539 +0200
++++ b/mlow/fft.go	2026-09-25 07:58:25.717214930 +0200
 @@ -1,6 +1,9 @@
  package mlow
  
@@ -799,9 +880,9 @@ diff -ruN '--exclude=*.bak' meowcaller-rein/mlow/fft.go meowcaller-fix/mlow/fft.
 +	kratzZurueck(cin)
 +	kratzZurueck(spec)
  }
-diff -ruN '--exclude=*.bak' meowcaller-rein/mlow/fft_dft_test.go meowcaller-fix/mlow/fft_dft_test.go
+diff -ruN '--exclude=*.log' meowcaller-rein/mlow/fft_dft_test.go meowcaller-fix/mlow/fft_dft_test.go
 --- a/mlow/fft_dft_test.go	1970-01-01 01:00:00.000000000 +0100
-+++ b/mlow/fft_dft_test.go	2026-09-24 23:09:54.497242331 +0200
++++ b/mlow/fft_dft_test.go	2026-09-25 07:58:25.717256319 +0200
 @@ -0,0 +1,59 @@
 +package mlow
 +
@@ -862,9 +943,9 @@ diff -ruN '--exclude=*.bak' meowcaller-rein/mlow/fft_dft_test.go meowcaller-fix/
 +		}
 +	}
 +}
-diff -ruN '--exclude=*.bak' meowcaller-rein/mlow/fft_real_test.go meowcaller-fix/mlow/fft_real_test.go
+diff -ruN '--exclude=*.log' meowcaller-rein/mlow/fft_real_test.go meowcaller-fix/mlow/fft_real_test.go
 --- a/mlow/fft_real_test.go	1970-01-01 01:00:00.000000000 +0100
-+++ b/mlow/fft_real_test.go	2026-09-24 23:09:54.497278219 +0200
++++ b/mlow/fft_real_test.go	2026-09-25 07:58:25.717292138 +0200
 @@ -0,0 +1,67 @@
 +package mlow
 +
@@ -933,9 +1014,9 @@ diff -ruN '--exclude=*.bak' meowcaller-rein/mlow/fft_real_test.go meowcaller-fix
 +		}
 +	}
 +}
-diff -ruN '--exclude=*.bak' meowcaller-rein/mlow/lpc.go meowcaller-fix/mlow/lpc.go
---- a/mlow/lpc.go	2026-09-24 21:21:49.159187063 +0200
-+++ b/mlow/lpc.go	2026-09-24 23:09:54.497314268 +0200
+diff -ruN '--exclude=*.log' meowcaller-rein/mlow/lpc.go meowcaller-fix/mlow/lpc.go
+--- a/mlow/lpc.go	2026-09-25 07:59:15.625376927 +0200
++++ b/mlow/lpc.go	2026-09-25 07:58:25.717327827 +0200
 @@ -1,6 +1,9 @@
  package mlow
  
